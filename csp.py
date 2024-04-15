@@ -7,14 +7,20 @@ extract the CSP output for individual subjects), then project to source space.
 
 General steps:
 
-0) band-pass filtering the epochs with epochs.filter,
-1) mne.decoding.Scaler to deal with channel types,
-2) sklearn PCA to reduce rank to that of the data,
-3) mne.decoding.CSP,
-4) Logistic Regression.
-5) Project patterns to source space.
-6) Save the results.
-7) Plot the results.
+1) optionally add additional continuous (from raw) projections to epochs and inverse
+2) band-pass filter the epochs with epochs.filter
+3) mne.decoding.Scaler to deal with channel types
+4) sklearn PCA to reduce rank to that of the data
+5) mne.decoding.CSP
+6) Logistic Regression
+7) Project patterns to source space
+8) Save the results
+9) Plot the results
+
+We filter with a transition bandwidth of 2 Hz, and use a minimum phase filter to
+keep things causial (avoid artifact leakage backward in time), but needs
+https://github.com/mne-tools/mne-python/pull/12507 (merged 2024/03/19) to
+filter properly.
 
 TODO:
 - Fix MNE-Python bug with get_coef
@@ -46,6 +52,11 @@ csp_freqs = config.decoding_csp_freqs
 n_components = 4
 random_state = 42
 n_splits = 5
+n_proj = 4
+n_exclude = 0  # must be zero unless on special branch that supports it
+ch_type = None  # "eeg"  # None means all
+whiten = True  # default is True
+rerun = False  # force re-run / overwrite of existing files
 
 # Construct the time bins
 time_bins = np.array(config.decoding_csp_times)
@@ -62,7 +73,6 @@ deriv_path = analysis_path / "natural-conversations-bids" / "derivatives"
 fig_path = analysis_path / "figures"
 subjects_dir = deriv_path / "freesurfer" / "subjects"
 use_subjects = subjects  # run all of them (could use e.g. subjects[2:3] just to run 03)
-rerun = False  # force re-run / overwrite of existing files
 fs_vertices = [
     s["vertno"] for s in mne.read_source_spaces(
         subjects_dir / "fsaverage" / "bem" / "fsaverage-oct6-src.fif"
@@ -73,12 +83,33 @@ n_vertices = sum(len(v) for v in fs_vertices)
 # %%
 # Loop over subjects to compute decoding scores and source space projections
 
+title = f"N={len(use_subjects)} subjects, {n_components} components"
+extra = ""
+if n_proj or n_exclude or ch_type or not whiten:
+    extra += "_proc"
+    if n_proj:
+        extra += f"-{n_proj}proj"
+        title += f", {n_proj} proj"
+    if n_exclude:
+        extra += f"-{n_exclude}excl"
+        title += f", first {n_exclude} excluded"
+    if ch_type:
+        extra += f"-{ch_type}"
+        title += f", {ch_type} only"
+    if not whiten:
+        extra += "-nowhiten"
+        title += ", no whitening"
+        if not ch_type:
+            raise RuntimeError("Must whiten when ch_type is None")
 for si, sub in enumerate(use_subjects):  # just 03 for now
     path = deriv_path / 'mne-bids-pipeline' / f'sub-{sub}' / 'meg'
     epochs_fname = path / f'sub-{sub}_task-conversation_proc-clean_epo.fif'
+    fwd_fname = path / f'sub-{sub}_task-conversation_fwd.fif'
+    cov_fname = path / f'sub-{sub}_task-rest_proc-clean_cov.fif'
     inv_fname = path / f'sub-{sub}_task-conversation_inv.fif'
-    out_fname = path / f'sub-{sub}_task-conversation_decoding_csp.h5'
-    if out_fname.exists() or rerun:
+    out_fname = path / f'sub-{sub}_task-conversation_decoding{extra}_csp.h5'
+    proj_fname = path / f'sub-{sub}_task-conversation_proc-proj_proj.fif'
+    if out_fname.exists() and not rerun:
         continue
 
     print(f"Processing sub-{sub} ...")
@@ -86,22 +117,65 @@ for si, sub in enumerate(use_subjects):  # just 03 for now
     # Read data
     epochs = mne.read_epochs(epochs_fname).load_data()
 
+    if n_proj:
+        if rerun or not proj_fname.exists():
+            print(f"  Loading raw data ...")
+            import time
+            t0 = time.time()
+            raw = mne.concatenate_raws([
+                mne.io.read_raw_fif(path / f"sub-{sub}_task-conversation_run-{run:02d}_proc-clean_raw.fif").load_data().resample(100, method="polyphase")
+                for run in range(1, 6)  # 1 through 5 are conversation/repetition
+            ])
+            raw.filter(2, None, l_trans_bandwidth=1)  # we know it's broadband
+            reject = dict(mag=5e-12, eeg=500e-6)
+            proj = mne.compute_proj_raw(
+                raw, n_mag=10, n_grad=0, n_eeg=10, reject=reject, verbose=True,
+            )
+            assert len(proj) == 20
+            mne.write_proj(proj_fname, proj, overwrite=True)
+        all_proj = mne.read_proj(proj_fname)
+        proj = list()
+        for ii, kind in enumerate(("MEG", "EEG")):
+            these_proj = all_proj[10 * ii:10 * ii + n_proj]
+            tot_exp = 100 * sum(p["explained_var"] for p in these_proj)
+            print(f"  {kind} {n_proj=} raw exp var: {tot_exp:0.1f}%")
+            proj.extend(these_proj)
+        del all_proj
+        epochs.add_proj(proj).apply_proj()
+
     # only select the conditions we are interested in
     epochs = epochs[['conversation', 'repetition']].pick(["meg", "eeg"], exclude="bads")
+    if ch_type:
+        epochs.pick(ch_type)
     assert epochs.info["bads"] == []  # should have picked good only
     epochs.equalize_event_counts()
     labels = epochs.events[:, 2] # conversation=2, repetition=4
-    ranks = mne.compute_rank(inst=epochs, rank="info")
+    ranks = mne.compute_rank(inst=epochs, tol=1e-3, tol_kind="relative")
     rank = sum(ranks.values())
     print(f"  Ranks={ranks} (total={rank})")
     scaler = Scaler(epochs.info)
-    pca = UnsupervisedSpatialFilter(PCA(rank, whiten=True), average=False)
-    csp = CSP(n_components=n_components, reg=0.1)
+    pca = UnsupervisedSpatialFilter(PCA(rank, whiten=whiten), average=False)
+    kwargs = dict()
+    if n_exclude:
+        kwargs["n_exclude"] = n_exclude
+    csp = CSP(
+        n_components=n_components,
+        reg=0.1,
+        log=False,
+        **kwargs,
+    )
     lr = LinearModel(LogisticRegression(solver="liblinear", random_state=random_state))
     steps = [("scaler", scaler), ("PCA", pca), ("CSP", csp), ("LR", lr)]
     clf = Pipeline(steps)
-    cv = StratifiedKFold(n_splits=n_splits, random_state=random_state, shuffle=True)
-    inv = mne.minimum_norm.read_inverse_operator(inv_fname)
+    if n_proj or ch_type:
+        # Recreate inverse taking into account additional projections
+        cov = mne.read_cov(cov_fname)
+        fwd = mne.read_forward_solution(fwd_fname)
+        inv = mne.minimum_norm.make_inverse_operator(
+            epochs.info, fwd, cov, loose=0.2, depth=0.8, rank=ranks,
+        )
+    else:
+        inv = mne.minimum_norm.read_inverse_operator(inv_fname)
     assert inv["src"][0]["subject_his_id"] == "fsaverage"
     for si, s in enumerate(inv["src"]):
         assert si in range(2)
@@ -113,7 +187,8 @@ for si, sub in enumerate(use_subjects):  # just 03 for now
     for bi, (band, (fmin, fmax)) in enumerate(csp_freqs.items()):
         # 0) band-pass filtering the epochs to get the relevant freq band
         epochs_filt = epochs.copy().filter(
-            fmin, fmax, l_trans_bandwidth=1., h_trans_bandwidth=1., verbose="error",
+            fmin, fmax, l_trans_bandwidth=2., h_trans_bandwidth=2., verbose="error",
+            phase="minimum",
         )
         for ti, (tmin, tmax) in enumerate(time_bins):
             # Crop data to the time window of interest
@@ -124,6 +199,9 @@ for si, sub in enumerate(use_subjects):  # just 03 for now
             X = epochs_filt.copy().crop(tmin, tmax).get_data(copy=False)
 
             # Calculate the decoding scores
+            cv = StratifiedKFold(
+                n_splits=n_splits, random_state=random_state, shuffle=True,
+            )
             sub_scores[bi, ti] = cross_val_score(
                 clf, X, labels, cv=cv, verbose=True, scoring="roc_auc",
             )
@@ -137,7 +215,7 @@ for si, sub in enumerate(use_subjects):  # just 03 for now
             # In theory we should be able to extract the coef from the classifier:
             # coef = get_coef(clf, "patterns_", inverse_transform=True, verbose=True)
             # https://github.com/mne-tools/mne-python/issues/12502
-            coef = csp.patterns_[:n_components]
+            coef = csp.patterns_[n_exclude:n_exclude + n_components]
             assert coef.shape == (n_components, pca.estimator.n_components_), coef.shape
             coef = pca.estimator.inverse_transform(coef)
             assert coef.shape == (n_components, len(epochs.ch_names)), coef.shape
@@ -146,13 +224,20 @@ for si, sub in enumerate(use_subjects):  # just 03 for now
             evoked = mne.EvokedArray(coef, epochs.info, tmin=0, nave=len(epochs) // 2)
             stc = mne.minimum_norm.apply_inverse(evoked, inv, 1.0 / 9.0, "dSPM")
             assert stc.data.min() >= 0, stc.data.min()  # loose should do this already
-            # brain = stc.plot(
-            #     hemi="split", views=("lat", "med"), initial_time=0.01, subjects_dir=subjects_dir
-            # )
+            #if sub == "03" and fmin == 14 and tmin == -1.5:  # sub_scores[bi, ti].mean() > 0.9:
+            #    brain = stc.plot(
+            #        hemi="split", views=("lat", "med"), initial_time=0.,
+            #        subjects_dir=subjects_dir, time_viewer=True,
+            #    )
+            #    raise RuntimeError
             sub_stc_data[bi, ti] = stc.data
 
     # Save the results
-    h5io.write_hdf5(out_fname, {"stc_data": sub_stc_data, "scores": sub_scores})
+    h5io.write_hdf5(
+        out_fname,
+        {"stc_data": sub_stc_data, "scores": sub_scores},
+        overwrite=True,
+    )
     del sub_stc_data, sub_scores
 
 # %%
@@ -166,14 +251,14 @@ scores = np.zeros(
 )
 for si, sub in enumerate(use_subjects):
     path = deriv_path / 'mne-bids-pipeline' / f'sub-{sub}' / 'meg'
-    dec_fname = path / f'sub-{sub}_task-conversation_decoding_csp.h5'
+    dec_fname = path / f'sub-{sub}_task-conversation_decoding{extra}_csp.h5'
     data = h5io.read_hdf5(dec_fname)
     stc_data[si] = data["stc_data"]
     scores[si] = data["scores"]
 
-# Binarize absolute value of STC coefficients: keep top quartile of weights across
-# vertices (-2) and components (-1), then sum across components (-1) and subjects (0)
-data = (stc_data >= np.percentile(stc_data, 75, axis=(-2, -1), keepdims=True)).sum(-1).sum(0)
+# Binarize absolute value of STC coefficients: keep top 10th percentile of weights
+# across vertices (-2), then sum across components (-1) and subjects (0)
+data = (stc_data >= np.percentile(stc_data, 90, axis=-2, keepdims=True)).sum(-1).sum(0)
 assert data.shape == (len(csp_freqs), len(time_bins), n_vertices)
 data.shape = (-1, n_vertices)
 stc = mne.SourceEstimate(
@@ -186,7 +271,7 @@ fig, axes = plt.subplots(
     len(csp_freqs), len(time_bins), figsize=(12, 8), layout="constrained",
     squeeze=False,
 )
-fig.suptitle(f"N={len(use_subjects)} subjects, {n_components} components")
+fig.suptitle(title)
 brain = stc.plot(
     hemi="split", views=("lat", "med"), initial_time=0., subjects_dir=subjects_dir,
     background="w", size=(800, 600), time_viewer=False, colormap="viridis",
@@ -250,4 +335,4 @@ for bi, (band, (fmin, fmax)) in enumerate(csp_freqs.items()):
 brain.close()
 del brain
 fig_path.mkdir(exist_ok=True)
-fig.savefig(fig_path / "decoding_csp.png")
+fig.savefig(fig_path / f"decoding{extra}_csp.png")

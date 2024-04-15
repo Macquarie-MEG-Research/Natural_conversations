@@ -27,7 +27,8 @@ data_type = "meg"
 eeg_reference = "average"
 
 l_freq = 0.5
-h_freq = 40.0
+h_freq = 45.0
+h_trans_bandwidth = 5
 epochs_decim = 5
 process_rest = True
 
@@ -43,19 +44,19 @@ n_proj_eog = dict(n_mag=1, n_eeg=1)
 # Epoching
 reject = {'eeg': 150e-6, 'mag': 5000e-15}
 conditions = ["ba", "da", "conversation", "repetition"]
-epochs_tmin = -1
-epochs_tmax = 1
+epochs_tmin = -1.5
+epochs_tmax = 0.5
 baseline = None
 
 # Decoding
 contrasts = [("conversation", "repetition")]
 decoding_csp = True
-decoding_csp_times = [-1, -0.5, 0, 0.5, 1]  # before and after
+decoding_csp_times = [-1.5, -1, -0.5, 0, 0.5]  # before and after
 decoding_csp_freqs = {
     'theta': [4, 7],
     'alpha': [8, 13],
     'beta': [14, 30],
-    'gamma': [31, 49],
+    'gamma': [31, 45],
 }
 
 # TFRs
