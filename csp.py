@@ -1,4 +1,4 @@
-'''
+"""
 CSP is computed by mne-bids-pipeline (plots are shown in the report, and decoding
 scores are saved in an excel file), but the classifiers themselves are not saved.
 
@@ -24,14 +24,17 @@ filter properly.
 
 TODO:
 - Fix MNE-Python bug with get_coef
-'''
+"""
 
 from pathlib import Path
+import textwrap
 
 import h5io
 import matplotlib.pyplot as plt
 from matplotlib import colors, colormaps, cm
 import numpy as np
+import pandas as pd
+from scipy.stats import spearmanr, kendalltau  # noqa: F401
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_score
@@ -58,6 +61,10 @@ ch_type = None  # "eeg"  # None means all
 whiten = True  # default is True
 rerun = False  # force re-run / overwrite of existing files
 
+plot_classification = False
+plot_indiv = False
+plot_correlations = True
+
 # Construct the time bins
 time_bins = np.array(config.decoding_csp_times)
 assert time_bins.ndim == 1
@@ -68,9 +75,11 @@ subjects = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11',
             '13', '14', '15', '16', '17', '18', '19', '21', '22', '23', '24',
             '25', '26', '27'] # excluding subj 12 & 20
 
+data_path = deriv_path = Path(__file__).parents[1] / "Natural_Conversations_study" / "data"
 analysis_path = deriv_path = Path(__file__).parents[1] / "Natural_Conversations_study" / "analysis"
 deriv_path = analysis_path / "natural-conversations-bids" / "derivatives"
-fig_path = analysis_path / "figures"
+fig_path = analysis_path / "figures" / "CSP-decoding"
+cop_path = analysis_path / "figures"
 subjects_dir = deriv_path / "freesurfer" / "subjects"
 use_subjects = subjects  # run all of them (could use e.g. subjects[2:3] just to run 03)
 fs_vertices = [
@@ -258,26 +267,9 @@ for si, sub in enumerate(use_subjects):
 
 # Binarize absolute value of STC coefficients: keep top 10th percentile of weights
 # across vertices (-2), then sum across components (-1) and subjects (0)
-data = (stc_data >= np.percentile(stc_data, 90, axis=-2, keepdims=True)).sum(-1).sum(0)
-assert data.shape == (len(csp_freqs), len(time_bins), n_vertices)
-data.shape = (-1, n_vertices)
-stc = mne.SourceEstimate(
-    data.T, vertices=fs_vertices, tmin=0, tstep=1., subject="fsaverage",
-)
-assert data.min() == 0
-del data
-
-fig, axes = plt.subplots(
-    len(csp_freqs), len(time_bins), figsize=(12, 8), layout="constrained",
-    squeeze=False,
-)
-fig.suptitle(title)
-brain = stc.plot(
-    hemi="split", views=("lat", "med"), initial_time=0., subjects_dir=subjects_dir,
-    background="w", size=(800, 600), time_viewer=False, colormap="viridis",
-    clim=dict(kind="value", lims=[0, 1, 2]), smoothing_steps=5, colorbar=False,
-    transparent=True,
-)
+subj_data = (stc_data >= np.percentile(stc_data, 90, axis=-2, keepdims=True)).sum(-1)
+data_ = subj_data.sum(0)  # subjects
+assert data_.shape == (len(csp_freqs), len(time_bins), n_vertices)
 
 
 def clean_brain(brain_img):
@@ -291,48 +283,206 @@ def clean_brain(brain_img):
     return np.concatenate((brain_img, alpha[..., np.newaxis]), -1)
 
 
-for bi, (band, (fmin, fmax)) in enumerate(csp_freqs.items()):
-    vmax = np.max(stc.data[:, bi * len(time_bins):(bi + 1) * len(time_bins)])
-    assert vmax in range(len(use_subjects) * n_components + 1), vmax
-    brain.update_lut(fmin=-0.5, fmid=vmax / 2., fmax=vmax + 0.5)
-
-    cmap = colormaps.get_cmap("viridis")
-    cmaplist = np.array([cmap(i / vmax) for i in range(vmax + 1)])
-    w = np.linspace(0, 1, vmax // 2, endpoint=False)
-    cmaplist[:vmax // 2] = (  # take first half of points and alpha them in with mid gray
-        w[:, np.newaxis] * cmaplist[:vmax // 2] +
-        (1 - w[:, np.newaxis]) * np.array([0.5, 0.5, 0.5, 0])
-    )
-    cmap = colors.LinearSegmentedColormap.from_list('Custom cmap', cmaplist, len(cmaplist))
-    del cmaplist, w
-
-    norm = colors.BoundaryNorm(np.arange(0, vmax + 2) - 0.5, vmax + 1, clip=True)
-    sm = cm.ScalarMappable(norm=norm, cmap=cmap)
-    ticks = np.arange(0, vmax + 1)
-    ticks = ticks[np.round(np.linspace(0, vmax, min(5, vmax + 1))).astype(int)]
-    cb = fig.colorbar(
-        sm, ax=axes[bi], orientation="vertical", label="subject x component",
-        ticks=ticks, aspect=10, shrink=0.8,
-    )
-    cb.ax.patch.set_color('0.5')
-
-    for ti, (tmin, tmax) in enumerate(time_bins):
-        ax = axes[bi, ti]
-        if bi == 0:
-            ax.set_title(f"{tmin} - {tmax}s")
-        if ti == 0:
-            ax.set_ylabel(f"{fmin} - {fmax} Hz")
-        ax.set(xticks=[], yticks=[], aspect="equal")
-        brain.set_time_point(bi * len(time_bins) + ti)
-        ax.imshow(clean_brain(brain.screenshot()))
-        for key in ax.spines:
-            ax.spines[key].set_visible(False)
-        ax.text(
-            0.5, 0.5, f"{scores.mean(-1).mean(0)[bi, ti]:0.2f}",
-            transform=ax.transAxes, ha="center", va="center",
+brain_kwargs = dict(
+    hemi="split", views=("lat", "med"), time_viewer=False, background="w",
+    size=(800, 600), smoothing_steps=5, colorbar=False, subjects_dir=subjects_dir,
+)
+if plot_classification or plot_indiv:
+    all_datas = dict()
+    if plot_classification:
+        all_datas[""] = (data_, scores.mean(-1).mean(0))
+    if plot_indiv:
+        for si, subj in enumerate(use_subjects):
+            all_datas[subj] = (subj_data[si], scores.mean(-1)[si])
+    for subj_key, (this_data, this_scores) in all_datas.items():
+        assert this_scores.shape == (len(csp_freqs), len(time_bins)), this_scores.shape
+        fig, axes = plt.subplots(
+            len(csp_freqs), len(time_bins), figsize=(12, 8), layout="constrained",
+            squeeze=False,
+        )
+        fig.suptitle(title + (f", G{subj_key}" if subj_key else ""))
+        assert this_data.shape == (len(csp_freqs), len(time_bins), n_vertices), this_data.shape  # noqa: E501
+        stc = mne.SourceEstimate(
+            this_data.reshape(-1, n_vertices).T,
+            vertices=fs_vertices, tmin=0, tstep=1., subject="fsaverage",
+        )
+        brain = stc.plot(
+            initial_time=0., transparent=True,
+            colormap="virdis", clim=dict(kind="value", lims=[0, 1, 2]),
+            **brain_kwargs,
         )
 
-brain.close()
-del brain
-fig_path.mkdir(exist_ok=True)
-fig.savefig(fig_path / f"decoding{extra}_csp.png")
+        for bi, (band, (fmin, fmax)) in enumerate(csp_freqs.items()):
+            if subj_key == "":
+                vmax = np.max(stc.data[:, bi * len(time_bins):(bi + 1) * len(time_bins)])
+                fmid = vmax / 2.
+            else:
+                vmax = n_components
+                fmid = 1.
+            assert vmax in range(len(use_subjects) * n_components + 1), vmax
+            brain.update_lut(fmin=-0.5, fmid=fmid, fmax=vmax + 0.5)
+
+            cmap = colormaps.get_cmap("viridis")
+            cmaplist = np.array([cmap(i / vmax) for i in range(vmax + 1)])
+            w = np.linspace(0, 1, vmax // 2, endpoint=False)
+            cmaplist[:vmax // 2] = (  # take first half of points and alpha them in with mid gray
+                w[:, np.newaxis] * cmaplist[:vmax // 2] +
+                (1 - w[:, np.newaxis]) * np.array([0.5, 0.5, 0.5, 0])
+            )
+            cmap = colors.LinearSegmentedColormap.from_list('Custom cmap', cmaplist, len(cmaplist))
+            del cmaplist, w
+
+            norm = colors.BoundaryNorm(np.arange(0, vmax + 2) - 0.5, vmax + 1, clip=True)
+            sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+            ticks = np.arange(0, vmax + 1)
+            ticks = ticks[np.round(np.linspace(0, vmax, min(5, vmax + 1))).astype(int)]
+            cb = fig.colorbar(
+                sm, ax=axes[bi], orientation="vertical", label="subject x component",
+                ticks=ticks, aspect=10, shrink=0.8,
+            )
+            cb.ax.patch.set_color('0.5')
+
+            for ti, (tmin, tmax) in enumerate(time_bins):
+                ax = axes[bi, ti]
+                if bi == 0:
+                    ax.set_title(f"{tmin} - {tmax}s")
+                if ti == 0:
+                    ax.set_ylabel(f"{fmin} - {fmax} Hz")
+                ax.set(xticks=[], yticks=[], aspect="equal")
+                brain.set_time_point(bi * len(time_bins) + ti)
+                ax.imshow(clean_brain(brain.screenshot()))
+                for key in ax.spines:
+                    ax.spines[key].set_visible(False)
+                ax.text(
+                    0.5, 0.5, f"{this_scores[bi, ti]:0.2f}",
+                    transform=ax.transAxes, ha="center", va="center",
+                )
+
+        brain.close()
+        del brain
+        fig_path.mkdir(exist_ok=True)
+        subj_extra = f"_G{subj_key}" if subj_key else ""
+        fig.savefig(fig_path / f"decoding{extra}_csp{subj_extra}.png")
+        if key:
+            plt.close(fig=fig)
+
+# %%
+# Individual subject maps
+
+
+# %%
+# Correlations with copresence
+
+co = pd.read_excel(data_path / "Copresence_questionnaire_(values_only).xlsx")
+co.drop([
+    "StartDate", "EndDate", "Status", "IPAddress", "Progress", "Duration (in seconds)",
+    "Finished", "RecordedDate", "ResponseId", "RecipientLastName",
+    "RecipientFirstName", "RecipientEmail", "ExternalReference", "LocationLatitude",
+    "LocationLongitude", "DistributionChannel", "UserLanguage", "SessionDate",
+    "SessionTime", "Gender",
+], axis=1, inplace=True)
+order = [list(co["ParticipantID"]).index(f"G{subj}") for subj in use_subjects]
+co = co.reindex(order)
+co.set_index("ParticipantID", inplace=True)
+np.testing.assert_array_equal(co.index, [f"G{subj}" for subj in use_subjects])
+co_kinds = list(co.columns)
+co_values = np.array(co, float)
+del co
+# Augment the array with the scores in the time of interest
+toi = (-1.0, -0.5)
+tidx = np.where((time_bins == toi).all(-1))[0]
+assert len(tidx) == 1, tidx
+tidx = tidx[0]
+co_kinds += [f"{band} {toi[0]} {toi[1]}" for band in csp_freqs]
+co_values = np.c_[co_values, scores[:, :, tidx].mean(-1)]
+
+indep = np.eye(len(use_subjects))
+indep -= indep.mean(0)
+
+if plot_correlations:
+    # First characterize the questionnaire
+    fig, axes = plt.subplots(1, 2, figsize=(8, 3), layout="constrained")
+    im = axes[0].imshow(np.corrcoef(co_values.T) ** 2, vmin=0, vmax=1, cmap="magma")
+    axes[0].set(xlabel="Age/Question/Score", xticks=[])
+    ls = dict(Components="-", Uncorrelated="--")
+    cs = dict(Components="C0", Uncorrelated="0.7")
+    ms = dict(Components="o", Uncorrelated="none")
+    for which, vals in dict(Components=co_values, Uncorrelated=indep).items():
+        c2 = vals - vals.mean(0)
+        c2 /= np.linalg.norm(c2, axis=0)
+        _, s, v = np.linalg.svd(c2, full_matrices=False)
+        s **= 2
+        s /= s.sum() / 100
+        axes[1].plot(np.arange(1, len(s) + 1), np.cumsum(s), label=which,
+                     color=cs[which], linestyle=ls[which], marker=ms[which])
+        if which == "Components":
+            df_out = pd.DataFrame(data=np.c_[s, v], columns=["var"] + list(co_kinds))
+            df_out.to_csv(cop_path / "copresence_svd.csv", index=False)
+
+    axes[1].legend(loc="lower right")
+    axes[1].set(xlabel="Component", ylabel="Cumulative var exp (%)")
+    fig.colorbar(im, ax=axes, label="R²", location="left", shrink=0.8)
+    fig.savefig(cop_path / f"copresence_svd.png")
+
+    # Next correlate with some questions of interest
+    qois = {  # Eventually we could pull from the sheet directly
+        1: "Involvement - He/she was intensely involved in our conversation.",
+        4: "Involvement - He/she was interested in talking.",
+        9: "Social_distance - He/she made our conversation seem intimate.",
+        16: "Composure - He/she felt very relaxed talking with me.",
+        21: "Attraction - He/she created a sense of closeness between us.",
+        34: "Task_orientation - He/she was open to my ideas.",
+        38: "Depth_Similarity - He/she made me feel we had a lot in common.",
+        45: "Trust_Receptivity - He/she was sincere.",
+        46: "Trust_Receptivity - He/she was honest in communicating with me.",
+        # 52: f"theta {toi[0]} {toi[1]}",
+        # 53: f"alpha {toi[0]} {toi[1]}",
+        # 54: f"beta {toi[0]} {toi[1]}",
+        # 55: f"gamma {toi[0]} {toi[1]}",
+    }
+    fig, axes = plt.subplots(
+        len(csp_freqs), len(qois), figsize=(20, 7), layout="constrained", squeeze=False,
+    )
+    cmap = "inferno"
+    clim = [0.1, 0.3, 0.5]
+    cmap_show = colormaps.get_cmap(cmap)
+    cmaplist = np.array([cmap_show(i / 255) for i in range(256)])
+    w = np.linspace(0, 1, 128, endpoint=False)
+    cmaplist[:128] = (  # take first half of points and alpha them in with mid gray
+        w[:, np.newaxis] * cmaplist[:128] +
+        (1 - w[:, np.newaxis]) * np.array([0.5, 0.5, 0.5, 1])
+    )
+    cmap_show = colors.LinearSegmentedColormap.from_list('Custom cmap', cmaplist, len(cmaplist))
+    for ci, (qi, title) in enumerate(qois.items()):
+        this_q = co_kinds[qi]
+        this_a = co_values[:, qi]
+        assert title.split()[0] in this_q, f"Title not found in {this_q}: {title}"
+        assert this_a.shape == (len(use_subjects),), this_a.shape
+        for bi, band in enumerate(csp_freqs):
+            this_data = subj_data[:, bi, tidx, :]
+            assert this_data.shape == (len(use_subjects), n_vertices), this_data.shape
+            corrs = np.array([kendalltau(this_a, d).statistic for d in this_data.T])
+            corrs[~np.isfinite(corrs)] = 0
+            corrs = np.abs(corrs)
+            stc = mne.SourceEstimate(corrs[:, np.newaxis], fs_vertices, 0, 1, "fsaverage")
+            brain = stc.plot(
+                colormap="inferno", clim=dict(kind="value", lims=clim),
+                **brain_kwargs,
+            )
+            ax = axes[bi, ci]
+            ax.imshow(clean_brain(brain.screenshot()))
+            brain.close()
+            ax.set(xticks=[], yticks=[], aspect="equal")
+            for key in ax.spines:
+                ax.spines[key].set_visible(False)
+            if bi == 0:
+                title_short = title.split("-")[0].strip()
+                desc = title.split("-", 1)[1].strip().rstrip(".")
+                desc = desc.lstrip("He/she").strip()
+                desc = "\n".join(textwrap.wrap(desc, 30))
+                ax.set_title(f"{qi}: {title_short}\n{desc}", fontsize=8)
+            if ci == 0:
+                ax.set_ylabel(f"{band}: {scores[:, bi, tidx, :].mean():0.2f}")
+    sm = cm.ScalarMappable(norm=colors.Normalize(clim[0], clim[2]), cmap=cmap_show)
+    fig.colorbar(sm, ax=axes, label="Kendall's τ", location="bottom", shrink=0.1)
+    fig.savefig(fig_path / "copresence_correlations.png")
