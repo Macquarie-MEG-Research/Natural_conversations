@@ -129,8 +129,7 @@ for si, sub in enumerate(use_subjects):  # just 03 for now
     if n_proj:
         if rerun or not proj_fname.exists():
             print(f"  Loading raw data ...")
-            import time
-            t0 = time.time()
+            # Using Raw
             raw = mne.concatenate_raws([
                 mne.io.read_raw_fif(path / f"sub-{sub}_task-conversation_run-{run:02d}_proc-clean_raw.fif").load_data().resample(100, method="polyphase")
                 for run in range(1, 6)  # 1 through 5 are conversation/repetition
@@ -140,6 +139,15 @@ for si, sub in enumerate(use_subjects):  # just 03 for now
             proj = mne.compute_proj_raw(
                 raw, n_mag=10, n_grad=0, n_eeg=10, reject=reject, verbose=True,
             )
+            # Could use Epochs
+            # proj_epochs = epochs.copy().filter(3, None, l_trans_bandwidth=2).crop(0, None)
+            # proj = mne.compute_proj_epochs(
+            #     proj_epochs, n_mag=10, n_grad=0, n_eeg=10, verbose=True,
+            # )
+            # Could use Evoked
+            # proj = mne.compute_proj_evoked(
+            #     proj_epochs.average(), n_mag=10, n_grad=0, n_eeg=10, verbose=True,
+            # )
             assert len(proj) == 20
             mne.write_proj(proj_fname, proj, overwrite=True)
         all_proj = mne.read_proj(proj_fname)
@@ -308,7 +316,7 @@ if plot_classification or plot_indiv:
         )
         brain = stc.plot(
             initial_time=0., transparent=True,
-            colormap="virdis", clim=dict(kind="value", lims=[0, 1, 2]),
+            colormap="viridis", clim=dict(kind="value", lims=[0, 1, 2]),
             **brain_kwargs,
         )
 
@@ -388,13 +396,13 @@ np.testing.assert_array_equal(co.index, [f"G{subj}" for subj in use_subjects])
 co_kinds = list(co.columns)
 co_values = np.array(co, float)
 del co
-# Augment the array with the scores in the time of interest
 toi = (-1.0, -0.5)
 tidx = np.where((time_bins == toi).all(-1))[0]
 assert len(tidx) == 1, tidx
 tidx = tidx[0]
-co_kinds += [f"{band} {toi[0]} {toi[1]}" for band in csp_freqs]
-co_values = np.c_[co_values, scores[:, :, tidx].mean(-1)]
+# Augment the array with the scores in the time of interest
+# co_kinds += [f"{band} {toi[0]} {toi[1]}" for band in csp_freqs]
+# co_values = np.c_[co_values, scores[:, :, tidx].mean(-1)]
 
 indep = np.eye(len(use_subjects))
 indep -= indep.mean(0)
@@ -407,12 +415,15 @@ if plot_correlations:
     ls = dict(Components="-", Uncorrelated="--")
     cs = dict(Components="C0", Uncorrelated="0.7")
     ms = dict(Components="o", Uncorrelated="none")
+    use_u = use_s = use_v = None
     for which, vals in dict(Components=co_values, Uncorrelated=indep).items():
         c2 = vals - vals.mean(0)
         c2 /= np.linalg.norm(c2, axis=0)
-        _, s, v = np.linalg.svd(c2, full_matrices=False)
+        u, s, v = np.linalg.svd(c2, full_matrices=False)
         s **= 2
         s /= s.sum() / 100
+        if which == "Components":
+            use_u, use_s, use_v = u, s, v
         axes[1].plot(np.arange(1, len(s) + 1), np.cumsum(s), label=which,
                      color=cs[which], linestyle=ls[which], marker=ms[which])
         if which == "Components":
@@ -425,6 +436,8 @@ if plot_correlations:
     fig.savefig(cop_path / f"copresence_svd.png")
 
     # Next correlate with some questions of interest
+    """
+    corr_extra = "_apriori"
     qois = {  # Eventually we could pull from the sheet directly
         1: "Involvement - He/she was intensely involved in our conversation.",
         4: "Involvement - He/she was interested in talking.",
@@ -440,8 +453,19 @@ if plot_correlations:
         # 54: f"beta {toi[0]} {toi[1]}",
         # 55: f"gamma {toi[0]} {toi[1]}",
     }
+    """
+    corr_extra = "_svd"
+    qois = {
+        f"SVD{ii + 1}": (
+            "Left singular vector - Q"
+            + "•".join(f"{n}" for n in np.argsort(np.abs(use_v)[ii])[::-1][:10])
+            + f"… expvar={use_s[ii]:0.1f}%"
+        )
+        for ii in range(6)
+    }
     fig, axes = plt.subplots(
-        len(csp_freqs), len(qois), figsize=(20, 7), layout="constrained", squeeze=False,
+        len(csp_freqs), len(qois), figsize=(2.5 * len(qois), 7),
+        layout="constrained", squeeze=False,
     )
     cmap = "inferno"
     clim = [0.1, 0.3, 0.5]
@@ -454,9 +478,13 @@ if plot_correlations:
     )
     cmap_show = colors.LinearSegmentedColormap.from_list('Custom cmap', cmaplist, len(cmaplist))
     for ci, (qi, title) in enumerate(qois.items()):
-        this_q = co_kinds[qi]
-        this_a = co_values[:, qi]
-        assert title.split()[0] in this_q, f"Title not found in {this_q}: {title}"
+        if isinstance(qi, str):
+            assert qi.startswith("SVD")
+            this_a = use_u[:, int(qi[3:]) - 1]
+        else:
+            this_q = co_kinds[qi]
+            this_a = co_values[:, qi]
+            assert title.split()[0] in this_q, f"Title not found in {this_q}: {title}"
         assert this_a.shape == (len(use_subjects),), this_a.shape
         for bi, band in enumerate(csp_freqs):
             this_data = subj_data[:, bi, tidx, :]
@@ -485,4 +513,6 @@ if plot_correlations:
                 ax.set_ylabel(f"{band}: {scores[:, bi, tidx, :].mean():0.2f}")
     sm = cm.ScalarMappable(norm=colors.Normalize(clim[0], clim[2]), cmap=cmap_show)
     fig.colorbar(sm, ax=axes, label="Kendall's τ", location="bottom", shrink=0.1)
-    fig.savefig(fig_path / "copresence_correlations.png")
+    fig.savefig(fig_path / f"copresence_correlations{corr_extra}.png")
+
+# %%
