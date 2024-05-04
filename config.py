@@ -11,7 +11,8 @@ from pathlib import Path
 
 study_name = "natural-conversations"
 bids_root = (
-    Path(__file__).parent / ".." / "Natural_Conversations_study" / "analysis"
+    #Path(__file__).parent / ".." / "Natural_Conversations_study" / "analysis"
+    Path("/mnt/d/Work/analysis_ME206/Natural_Conversations_study/analysis")
     / f'{study_name}-bids'
 ).resolve()
 interactive = False

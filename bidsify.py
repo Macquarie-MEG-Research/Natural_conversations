@@ -68,7 +68,7 @@ eeg_renames = {str(ci): ch for ci, ch in enumerate(eeg_map, 1)}
 ch_types_map = dict(ECG="ecg", EOG="eog")
 min_dur = 0.002  # for events
 
-subjects = tuple(f"G{s:02d}" for s in range(1, 28))
+subjects = tuple(f"G{s:02d}" for s in range(1, 33))
 manual_coreg = True  # use Judy's manual coregistration -trans.fif files to adjust coreg
 blocks = dict(  # to BIDS task and run
     B1=("conversation", "01"),
@@ -99,11 +99,16 @@ bad_coils = {
 # BIDS stuff
 name = "natural-conversations"
 datatype = suffix = "meg"
+
 share_root = Path(__file__).parents[1] / "Natural_Conversations_study"
 analysis_root = share_root / "analysis"
 data_root = share_root / "data"
 del share_root
 bids_root = analysis_root / f"{name}-bids"
+#analysis_root = Path("/mnt/d/Work/analysis_ME206/Natural_Conversations_study/analysis")
+#data_root = Path("/mnt/d/Work/analysis_ME206/data")
+#bids_root = Path("/mnt/e/M3/Natural_Conversations_study/analysis") / f"{name}-bids"
+
 bids_root.mkdir(exist_ok=True)
 mne_bids.make_dataset_description(
     path=bids_root,
@@ -158,6 +163,34 @@ def get_participant_turns(*, subject, block):
     onset = []
     duration = []
     for turn in participant_turns:
+        onset.append(turn[0])
+        duration.append(turn[1] - turn[0])
+    description = [ttype] * len(onset)
+    assert len(onset) > 5, len(onset)
+    return onset, duration, description
+
+def get_interviewer_turns(*, subject, block):
+    """Get interviewer turn annotations."""
+    min_event_duration = 1 # seconds
+    # note: segments in repetition block are shorter (need to use 1s to catch most of them)
+    turns_path = analysis_root / "audios_metadata_labelled" / f"{subject}_{block}.csv"
+    assert turns_path.is_file(), turns_path
+    df = pd.read_csv(turns_path)
+    interviewer_turns = []
+    for _, row in df.iterrows():
+        if row['person'] == 'interviewer' \
+            and (row['end']-row['start']) > min_event_duration \
+            and bool(row['is_full_turn']):
+                interviewer_turns.append([row['start'],row['end']])
+    # Turn into onset/duration/description (annotation)
+    assert len(block) == 2 and block[0] == "B", block
+    block_num = int(block[1])
+    assert block_num in range(1, 6)
+    ttype = 'conversation' if block_num % 2 else 'repetition'
+    print(f"    {len(interviewer_turns):2d} {ttype} turns")
+    onset = []
+    duration = []
+    for turn in interviewer_turns:
         onset.append(turn[0])
         duration.append(turn[1] - turn[0])
     description = [ttype] * len(onset)
@@ -319,6 +352,10 @@ for subject in subjects:
             assert len(mda) == n_das_meg.get(subject, 100), len(mda)
             assert len(eba) == n_bas_eeg.get(subject, 100), len(eba)
             assert len(eda) == n_das_eeg.get(subject, 100), len(eda)
+            #assert len(mba) > 95
+            #assert len(mda) > 95
+            #assert len(eba) > 95
+            #assert len(eda) > 95
             e_ev = e_ev[:len(m_ev)]
             np.testing.assert_array_equal(m_ev[:, 2], e_ev[:, 2])
             m = m_ev[:, 0] / raw_meg.info["sfreq"] - raw_meg.first_time
@@ -341,6 +378,9 @@ for subject in subjects:
             onset, duration, description = get_participant_turns(
                 subject=subject, block=block,
             )
+            #onset, duration, description = get_interviewer_turns(
+            #    subject=subject, block=block,
+            #)
             raw_meg.set_annotations(mne.Annotations(onset, duration, description))
             events = None
         # Add bads
