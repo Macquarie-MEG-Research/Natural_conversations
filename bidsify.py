@@ -35,6 +35,7 @@ Todo
 import copy
 import glob
 from pathlib import Path
+import platform
 
 import mne
 import mne_bids
@@ -44,6 +45,10 @@ import pandas as pd
 from scipy.spatial.distance import cdist
 
 import utils  # local module
+
+# default is to timelock to participant speech onset,
+# set this to True if you want to timelock to interviewer speech onset instead
+timelock_to_interviewer_onset = True
 
 n_bas_meg = dict(G03=99, G18=99, G19=98)
 n_das_meg = dict(G15=99, G18=98, G19=99)
@@ -105,9 +110,10 @@ analysis_root = share_root / "analysis"
 data_root = share_root / "data"
 del share_root
 bids_root = analysis_root / f"{name}-bids"
-#analysis_root = Path("/mnt/d/Work/analysis_ME206/Natural_Conversations_study/analysis")
-#data_root = Path("/mnt/d/Work/analysis_ME206/data")
-#bids_root = Path("/mnt/e/M3/Natural_Conversations_study/analysis") / f"{name}-bids"
+if platform.system() == 'Windows':
+    analysis_root = Path("D:/Work/analysis_ME206/Natural_Conversations_study/analysis")
+    data_root = Path("D:/Work/analysis_ME206/data")
+    bids_root = Path("E:/M3/Natural_Conversations_study/analysis") / f"{name}-bids"
 
 bids_root.mkdir(exist_ok=True)
 mne_bids.make_dataset_description(
@@ -378,9 +384,10 @@ for subject in subjects:
             onset, duration, description = get_participant_turns(
                 subject=subject, block=block,
             )
-            #onset, duration, description = get_interviewer_turns(
-            #    subject=subject, block=block,
-            #)
+            if timelock_to_interviewer_onset:
+                onset, duration, description = get_interviewer_turns(
+                    subject=subject, block=block,
+                )
             raw_meg.set_annotations(mne.Annotations(onset, duration, description))
             events = None
         # Add bads

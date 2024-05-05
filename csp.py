@@ -27,6 +27,7 @@ TODO:
 """
 
 from pathlib import Path
+import platform
 import textwrap
 
 import h5io
@@ -51,6 +52,10 @@ mne.viz.set_3d_options(
     antialias=False, depth_peeling=False, smooth_shading=False, multi_samples=1,
 )
 
+# default is to timelock to participant speech onset,
+# set this to True if you want to timelock to interviewer speech onset instead
+timelock_to_interviewer_onset = True
+
 csp_freqs = config.decoding_csp_freqs
 n_components = 4
 random_state = 42
@@ -73,11 +78,14 @@ del config
 
 subjects = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11',
             '13', '14', '15', '16', '17', '18', '19', '21', '22', '23', '24',
-            '25', '26', '27'] # excluding subj 12 & 20
+            '25', '26', '27', '29', '30', '31', '32'] # excluding subj 12, 20, 28
 
 data_path = deriv_path = Path(__file__).parents[1] / "Natural_Conversations_study" / "data"
 analysis_path = deriv_path = Path(__file__).parents[1] / "Natural_Conversations_study" / "analysis"
-analysis_path = '/mnt/d/Work/analysis_ME206/processing/bids/all/'
+if platform.system() == 'Windows':
+    data_path = Path("D:/Work/analysis_ME206/data")
+    analysis_path = Path("E:/M3/Natural_Conversations_study/analysis")
+
 deriv_path = analysis_path / "natural-conversations-bids" / "derivatives"
 fig_path = analysis_path / "figures" / "CSP-decoding"
 cop_path = analysis_path / "figures"
@@ -112,12 +120,12 @@ if n_proj or n_exclude or ch_type or not whiten:
         if not ch_type:
             raise RuntimeError("Must whiten when ch_type is None")
 for si, sub in enumerate(use_subjects):  # just 03 for now
-    #path = deriv_path / 'mne-bids-pipeline' / f'sub-{sub}' / 'meg'
+    path = deriv_path / 'mne-bids-pipeline' / f'sub-{sub}' / 'meg'
     epochs_fname = path / f'sub-{sub}_task-conversation_proc-clean_epo.fif'
     fwd_fname = path / f'sub-{sub}_task-conversation_fwd.fif'
     cov_fname = path / f'sub-{sub}_task-rest_proc-clean_cov.fif'
     inv_fname = path / f'sub-{sub}_task-conversation_inv.fif'
-    out_fname = save_path / f'sub-{sub}_task-conversation_decoding{extra}_csp.h5'
+    out_fname = path / f'sub-{sub}_task-conversation_decoding{extra}_csp.h5'
     proj_fname = path / f'sub-{sub}_task-conversation_proc-proj_proj.fif'
     if out_fname.exists() and not rerun:
         continue
@@ -268,8 +276,8 @@ scores = np.zeros(
     (len(use_subjects), len(csp_freqs), len(time_bins), n_splits),
 )
 for si, sub in enumerate(use_subjects):
-    #path = deriv_path / 'mne-bids-pipeline' / f'sub-{sub}' / 'meg'
-    dec_fname = save_path / f'sub-{sub}_task-conversation_decoding{extra}_csp.h5'
+    path = deriv_path / 'mne-bids-pipeline' / f'sub-{sub}' / 'meg'
+    dec_fname = path / f'sub-{sub}_task-conversation_decoding{extra}_csp.h5'
     data = h5io.read_hdf5(dec_fname)
     stc_data[si] = data["stc_data"]
     scores[si] = data["scores"]
@@ -398,6 +406,8 @@ co_kinds = list(co.columns)
 co_values = np.array(co, float)
 del co
 toi = (-1.0, -0.5)
+if timelock_to_interviewer_onset:
+    toi = (0, 0.5)
 tidx = np.where((time_bins == toi).all(-1))[0]
 assert len(tidx) == 1, tidx
 tidx = tidx[0]
