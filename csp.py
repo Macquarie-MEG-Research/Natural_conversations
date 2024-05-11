@@ -33,6 +33,7 @@ import textwrap
 import h5io
 import matplotlib.pyplot as plt
 from matplotlib import colors, colormaps, cm
+import PIL
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr, kendalltau  # noqa: F401
@@ -65,6 +66,8 @@ n_exclude = 0  # must be zero unless on special branch that supports it
 ch_type = None  # "eeg"  # None means all
 whiten = True  # default is True
 rerun = False  # force re-run / overwrite of existing files
+src_type = 'vol' # default is 'surface' source space
+mode = 'glass_brain' # 'stat_map' # plotting mode for volumne source space
 
 plot_classification = False
 plot_indiv = False
@@ -79,6 +82,7 @@ del config
 subjects = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11',
             '13', '14', '15', '16', '17', '18', '19', '21', '22', '23', '24',
             '25', '26', '27', '29', '30', '31', '32'] # excluding subj 12, 20, 28
+use_subjects = subjects  # run all of them (could use e.g. subjects[2:3] just to run 03)
 
 data_path = deriv_path = Path(__file__).parents[1] / "Natural_Conversations_study" / "data"
 analysis_path = deriv_path = Path(__file__).parents[1] / "Natural_Conversations_study" / "analysis"
@@ -88,12 +92,18 @@ if platform.system() == 'Windows':
 
 deriv_path = analysis_path / "natural-conversations-bids" / "derivatives"
 fig_path = analysis_path / "figures" / "CSP-decoding"
+if src_type == 'vol':
+    fig_path = analysis_path / "figures" / "CSP-decoding-vol"
 cop_path = analysis_path / "figures"
 subjects_dir = deriv_path / "freesurfer" / "subjects"
-use_subjects = subjects  # run all of them (could use e.g. subjects[2:3] just to run 03)
+if src_type == 'vol':
+    src_fname = subjects_dir / "fsaverage" / "bem" / "fsaverage-vol-5-src.fif"
+    bem_fname = subjects_dir / "fsaverage" / "bem" / "fsaverage-5120-5120-5120-bem-sol.fif"
+else:
+    src_fname = subjects_dir / "fsaverage" / "bem" / "fsaverage-oct6-src.fif"
 fs_vertices = [
     s["vertno"] for s in mne.read_source_spaces(
-        subjects_dir / "fsaverage" / "bem" / "fsaverage-oct6-src.fif"
+        src_fname
     )
 ]
 n_vertices = sum(len(v) for v in fs_vertices)
@@ -119,9 +129,13 @@ if n_proj or n_exclude or ch_type or not whiten:
         title += ", no whitening"
         if not ch_type:
             raise RuntimeError("Must whiten when ch_type is None")
+    if src_type == 'vol':
+        extra += "-vol"
+        title += ", vol src"
 for si, sub in enumerate(use_subjects):  # just 03 for now
     path = deriv_path / 'mne-bids-pipeline' / f'sub-{sub}' / 'meg'
     epochs_fname = path / f'sub-{sub}_task-conversation_proc-clean_epo.fif'
+    trans_fname = path / f'sub-{sub}_task-conversation_trans.fif'
     fwd_fname = path / f'sub-{sub}_task-conversation_fwd.fif'
     cov_fname = path / f'sub-{sub}_task-rest_proc-clean_cov.fif'
     inv_fname = path / f'sub-{sub}_task-conversation_inv.fif'
@@ -193,13 +207,27 @@ for si, sub in enumerate(use_subjects):  # just 03 for now
     lr = LinearModel(LogisticRegression(solver="liblinear", random_state=random_state))
     steps = [("scaler", scaler), ("PCA", pca), ("CSP", csp), ("LR", lr)]
     clf = Pipeline(steps)
-    if n_proj or ch_type:
+    if n_proj or ch_type or src_type == 'vol':
         # Recreate inverse taking into account additional projections
         cov = mne.read_cov(cov_fname)
-        fwd = mne.read_forward_solution(fwd_fname)
-        inv = mne.minimum_norm.make_inverse_operator(
-            epochs.info, fwd, cov, loose=0.2, depth=0.8, rank=ranks,
-        )
+        if src_type == 'vol':
+            src = mne.read_source_spaces(src_fname)
+            fwd = mne.make_forward_solution(
+                epochs.info,
+                trans=trans_fname,
+                src=src,
+                bem=bem_fname,
+                meg=True,
+                eeg=True,
+            )
+            inv = mne.minimum_norm.make_inverse_operator(
+                epochs.info, fwd, cov, rank=ranks,
+            )
+        else: # surface source space
+            fwd = mne.read_forward_solution(fwd_fname)
+            inv = mne.minimum_norm.make_inverse_operator(
+                epochs.info, fwd, cov, loose=0.2, depth=0.8, rank=ranks,
+            )
     else:
         inv = mne.minimum_norm.read_inverse_operator(inv_fname)
     assert inv["src"][0]["subject_his_id"] == "fsaverage"
@@ -319,15 +347,24 @@ if plot_classification or plot_indiv:
         )
         fig.suptitle(title + (f", G{subj_key}" if subj_key else ""))
         assert this_data.shape == (len(csp_freqs), len(time_bins), n_vertices), this_data.shape  # noqa: E501
-        stc = mne.SourceEstimate(
-            this_data.reshape(-1, n_vertices).T,
-            vertices=fs_vertices, tmin=0, tstep=1., subject="fsaverage",
-        )
-        brain = stc.plot(
-            initial_time=0., transparent=True,
-            colormap="viridis", clim=dict(kind="value", lims=[0, 1, 2]),
-            **brain_kwargs,
-        )
+        if src_type == 'vol':
+            stc = mne.VolSourceEstimate(
+                this_data.reshape(-1, n_vertices).T,
+                vertices=fs_vertices, tmin=0, tstep=1., subject="fsaverage",
+            )
+            src = mne.read_source_spaces(src_fname)
+            # for vol src, the plot function returns a matplotlib Figure -
+            # we can't update the clim & time point for this once plotted, so do the actual plotting later
+        else:
+            stc = mne.SourceEstimate(
+                this_data.reshape(-1, n_vertices).T,
+                vertices=fs_vertices, tmin=0, tstep=1., subject="fsaverage",
+            )
+            brain = stc.plot(
+                initial_time=0., transparent=True,
+                colormap="viridis", clim=dict(kind="value", lims=[0, 1, 2]),
+                **brain_kwargs,
+            )
 
         for bi, (band, (fmin, fmax)) in enumerate(csp_freqs.items()):
             if subj_key == "":
@@ -337,7 +374,8 @@ if plot_classification or plot_indiv:
                 vmax = n_components
                 fmid = 1.
             assert vmax in range(len(use_subjects) * n_components + 1), vmax
-            brain.update_lut(fmin=-0.5, fmid=fmid, fmax=vmax + 0.5)
+            if src_type != 'vol':
+                brain.update_lut(fmin=-0.5, fmid=fmid, fmax=vmax + 0.5)
 
             cmap = colormaps.get_cmap("viridis")
             cmaplist = np.array([cmap(i / vmax) for i in range(vmax + 1)])
@@ -360,26 +398,49 @@ if plot_classification or plot_indiv:
             cb.ax.patch.set_color('0.5')
 
             for ti, (tmin, tmax) in enumerate(time_bins):
+                #print(ti, tmin, tmax)
                 ax = axes[bi, ti]
                 if bi == 0:
                     ax.set_title(f"{tmin} - {tmax}s")
                 if ti == 0:
                     ax.set_ylabel(f"{fmin} - {fmax} Hz")
                 ax.set(xticks=[], yticks=[], aspect="equal")
-                brain.set_time_point(bi * len(time_bins) + ti)
-                ax.imshow(clean_brain(brain.screenshot()))
+                # plot now and add as subplot
+                if src_type == 'vol':
+                    brain = stc.plot(src=src, 
+                        subject='fsaverage', subjects_dir=subjects_dir, verbose=True,
+                        mode=mode,
+                        initial_time=bi * len(time_bins) + ti, # idx 0-11, corresponding to the 4 freq bands * 3 time bins
+                        #colorbar=False, # need to show colorbar in order to set clim
+                        colormap="viridis", 
+                        clim=dict(kind="value", lims=[0, fmid, vmax + 0.5]),
+                    )
+                    brain.canvas.draw()
+                    img = PIL.Image.frombytes('RGB', 
+                        brain.canvas.get_width_height(), brain.canvas.tostring_rgb()) # Note: brain.canvas.buffer_rgba() doesn't work
+                    width, height = img.size
+                    ax.imshow(img.crop((0, 50, width-50, height/2))) # tmp hack to remove the trace at bottom & make the img bigger
+                    plt.close(brain)
+                else:
+                    brain.set_time_point(bi * len(time_bins) + ti)
+                    ax.imshow(clean_brain(brain.screenshot()))
                 for key in ax.spines:
                     ax.spines[key].set_visible(False)
+                if src_type == 'vol':
+                    vert_pos = 0
+                else:
+                    vert_pos = 0.5
                 ax.text(
-                    0.5, 0.5, f"{this_scores[bi, ti]:0.2f}",
+                    0.5, vert_pos, f"{this_scores[bi, ti]:0.2f}",
                     transform=ax.transAxes, ha="center", va="center",
                 )
 
-        brain.close()
+        if src_type != 'vol':
+            brain.close()
         del brain
         fig_path.mkdir(exist_ok=True)
         subj_extra = f"_G{subj_key}" if subj_key else ""
-        fig.savefig(fig_path / f"decoding{extra}_csp{subj_extra}.png")
+        fig.savefig(fig_path / f"decoding{extra}_{mode[0:5]}_csp{subj_extra}.png")
         if key:
             plt.close(fig=fig)
 
@@ -447,83 +508,102 @@ if plot_correlations:
     fig.savefig(cop_path / f"copresence_svd.png")
 
     # Next correlate with some questions of interest
-    """
-    corr_extra = "_apriori"
-    qois = {  # Eventually we could pull from the sheet directly
-        1: "Involvement - He/she was intensely involved in our conversation.",
-        4: "Involvement - He/she was interested in talking.",
-        9: "Social_distance - He/she made our conversation seem intimate.",
-        16: "Composure - He/she felt very relaxed talking with me.",
-        21: "Attraction - He/she created a sense of closeness between us.",
-        34: "Task_orientation - He/she was open to my ideas.",
-        38: "Depth_Similarity - He/she made me feel we had a lot in common.",
-        45: "Trust_Receptivity - He/she was sincere.",
-        46: "Trust_Receptivity - He/she was honest in communicating with me.",
-        # 52: f"theta {toi[0]} {toi[1]}",
-        # 53: f"alpha {toi[0]} {toi[1]}",
-        # 54: f"beta {toi[0]} {toi[1]}",
-        # 55: f"gamma {toi[0]} {toi[1]}",
-    }
-    """
-    corr_extra = "_svd"
-    qois = {
-        f"SVD{ii + 1}": (
-            "Left singular vector - Q"
-            + "•".join(f"{n}" for n in np.argsort(np.abs(use_v)[ii])[::-1][:10])
-            + f"… expvar={use_s[ii]:0.1f}%"
+    corr_types = ["_apriori", "_svd"]
+    for corr_extra in corr_types:
+        if corr_extra == "_apriori":
+            qois = {  # Eventually we could pull from the sheet directly
+                1: "Involvement - He/she was intensely involved in our conversation.",
+                4: "Involvement - He/she was interested in talking.",
+                9: "Social_distance - He/she made our conversation seem intimate.",
+                16: "Composure - He/she felt very relaxed talking with me.",
+                21: "Attraction - He/she created a sense of closeness between us.",
+                34: "Task_orientation - He/she was open to my ideas.",
+                38: "Depth_Similarity - He/she made me feel we had a lot in common.",
+                45: "Trust_Receptivity - He/she was sincere.",
+                46: "Trust_Receptivity - He/she was honest in communicating with me.",
+                # 52: f"theta {toi[0]} {toi[1]}",
+                # 53: f"alpha {toi[0]} {toi[1]}",
+                # 54: f"beta {toi[0]} {toi[1]}",
+                # 55: f"gamma {toi[0]} {toi[1]}",
+            }
+        elif corr_extra == "_svd":
+            qois = {
+                f"SVD{ii + 1}": (
+                    "Left singular vector - Q"
+                    + "•".join(f"{n}" for n in np.argsort(np.abs(use_v)[ii])[::-1][:10])
+                    + f"… expvar={use_s[ii]:0.1f}%"
+                )
+                for ii in range(6)
+            }
+        fig, axes = plt.subplots(
+            len(csp_freqs), len(qois), figsize=(2.5 * len(qois), 7),
+            layout="constrained", squeeze=False,
         )
-        for ii in range(6)
-    }
-    fig, axes = plt.subplots(
-        len(csp_freqs), len(qois), figsize=(2.5 * len(qois), 7),
-        layout="constrained", squeeze=False,
-    )
-    cmap = "inferno"
-    clim = [0.1, 0.3, 0.5]
-    cmap_show = colormaps.get_cmap(cmap)
-    cmaplist = np.array([cmap_show(i / 255) for i in range(256)])
-    w = np.linspace(0, 1, 128, endpoint=False)
-    cmaplist[:128] = (  # take first half of points and alpha them in with mid gray
-        w[:, np.newaxis] * cmaplist[:128] +
-        (1 - w[:, np.newaxis]) * np.array([0.5, 0.5, 0.5, 1])
-    )
-    cmap_show = colors.LinearSegmentedColormap.from_list('Custom cmap', cmaplist, len(cmaplist))
-    for ci, (qi, title) in enumerate(qois.items()):
-        if isinstance(qi, str):
-            assert qi.startswith("SVD")
-            this_a = use_u[:, int(qi[3:]) - 1]
-        else:
-            this_q = co_kinds[qi]
-            this_a = co_values[:, qi]
-            assert title.split()[0] in this_q, f"Title not found in {this_q}: {title}"
-        assert this_a.shape == (len(use_subjects),), this_a.shape
-        for bi, band in enumerate(csp_freqs):
-            this_data = subj_data[:, bi, tidx, :]
-            assert this_data.shape == (len(use_subjects), n_vertices), this_data.shape
-            corrs = np.array([kendalltau(this_a, d).statistic for d in this_data.T])
-            corrs[~np.isfinite(corrs)] = 0
-            corrs = np.abs(corrs)
-            stc = mne.SourceEstimate(corrs[:, np.newaxis], fs_vertices, 0, 1, "fsaverage")
-            brain = stc.plot(
-                colormap="inferno", clim=dict(kind="value", lims=clim),
-                **brain_kwargs,
-            )
-            ax = axes[bi, ci]
-            ax.imshow(clean_brain(brain.screenshot()))
-            brain.close()
-            ax.set(xticks=[], yticks=[], aspect="equal")
-            for key in ax.spines:
-                ax.spines[key].set_visible(False)
-            if bi == 0:
-                title_short = title.split("-")[0].strip()
-                desc = title.split("-", 1)[1].strip().rstrip(".")
-                desc = desc.lstrip("He/she").strip()
-                desc = "\n".join(textwrap.wrap(desc, 30))
-                ax.set_title(f"{qi}: {title_short}\n{desc}", fontsize=8)
-            if ci == 0:
-                ax.set_ylabel(f"{band}: {scores[:, bi, tidx, :].mean():0.2f}")
-    sm = cm.ScalarMappable(norm=colors.Normalize(clim[0], clim[2]), cmap=cmap_show)
-    fig.colorbar(sm, ax=axes, label="Kendall's τ", location="bottom", shrink=0.1)
-    fig.savefig(fig_path / f"copresence_correlations{corr_extra}.png")
+        cmap = "inferno"
+        clim = [0.1, 0.3, 0.5] # [0.15, 0.35, 0.55]
+        cmap_show = colormaps.get_cmap(cmap)
+        cmaplist = np.array([cmap_show(i / 255) for i in range(256)])
+        w = np.linspace(0, 1, 128, endpoint=False)
+        cmaplist[:128] = (  # take first half of points and alpha them in with mid gray
+            w[:, np.newaxis] * cmaplist[:128] +
+            (1 - w[:, np.newaxis]) * np.array([0.5, 0.5, 0.5, 1])
+        )
+        cmap_show = colors.LinearSegmentedColormap.from_list('Custom cmap', cmaplist, len(cmaplist))
+        for ci, (qi, title) in enumerate(qois.items()):
+            if isinstance(qi, str):
+                assert qi.startswith("SVD")
+                this_a = use_u[:, int(qi[3:]) - 1]
+            else:
+                this_q = co_kinds[qi]
+                this_a = co_values[:, qi]
+                assert title.split()[0] in this_q, f"Title not found in {this_q}: {title}"
+            assert this_a.shape == (len(use_subjects),), this_a.shape
+            for bi, band in enumerate(csp_freqs):
+                this_data = subj_data[:, bi, tidx, :]
+                assert this_data.shape == (len(use_subjects), n_vertices), this_data.shape
+                corrs = np.array([kendalltau(this_a, d).statistic for d in this_data.T])
+                corrs[~np.isfinite(corrs)] = 0
+                corrs = np.abs(corrs)
+                ax = axes[bi, ci]
+                if src_type == 'vol':
+                    stc = mne.VolSourceEstimate(
+                        corrs[:, np.newaxis], 
+                        vertices=fs_vertices, tmin=0, tstep=1., subject="fsaverage",
+                    )
+                    src = mne.read_source_spaces(src_fname)
+                    brain = stc.plot(src=src, 
+                        subject='fsaverage', subjects_dir=subjects_dir, verbose=True,
+                        mode=mode,
+                        #colorbar=False,
+                        colormap="inferno", clim=dict(kind="value", lims=clim),
+                    )
+                    brain.canvas.draw()
+                    img = PIL.Image.frombytes('RGB', 
+                        brain.canvas.get_width_height(), brain.canvas.tostring_rgb()) # Note: brain.canvas.buffer_rgba() doesn't work
+                    width, height = img.size
+                    ax.imshow(img.crop((70, 50, width-105, height/2-20))) # tmp hack to remove the trace at bottom & make the img bigger
+                    plt.close(brain)
+                else:
+                    stc = mne.SourceEstimate(corrs[:, np.newaxis], fs_vertices, 0, 1, "fsaverage")
+                    brain = stc.plot(
+                        colormap="inferno", clim=dict(kind="value", lims=clim),
+                        **brain_kwargs,
+                    )
+                    ax.imshow(clean_brain(brain.screenshot()))
+                    brain.close()
+                ax.set(xticks=[], yticks=[], aspect="equal")
+                for key in ax.spines:
+                    ax.spines[key].set_visible(False)
+                if bi == 0:
+                    title_short = title.split("-")[0].strip()
+                    desc = title.split("-", 1)[1].strip().rstrip(".")
+                    desc = desc.lstrip("He/she").strip()
+                    desc = "\n".join(textwrap.wrap(desc, 30))
+                    ax.set_title(f"{qi}: {title_short}\n{desc}", fontsize=8)
+                if ci == 0:
+                    ax.set_ylabel(f"{band}: {scores[:, bi, tidx, :].mean():0.2f}")
+        sm = cm.ScalarMappable(norm=colors.Normalize(clim[0], clim[2]), cmap=cmap_show)
+        fig.colorbar(sm, ax=axes, label="Kendall's τ", location="bottom", shrink=0.1)
+        fig.savefig(fig_path / f"copresence_correlations{corr_extra}_{mode[0:5]}.png")
 
 # %%
