@@ -21,9 +21,6 @@ We filter with a transition bandwidth of 2 Hz, and use a minimum phase filter to
 keep things causial (avoid artifact leakage backward in time), but needs
 https://github.com/mne-tools/mne-python/pull/12507 (merged 2024/03/19) to
 filter properly.
-
-TODO:
-- Fix MNE-Python bug with get_coef
 """
 
 from pathlib import Path
@@ -36,7 +33,7 @@ from matplotlib import colors, colormaps, cm
 import PIL
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr, kendalltau  # noqa: F401
+from scipy.stats import kendalltau
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_score
@@ -53,10 +50,6 @@ mne.viz.set_3d_options(
     antialias=False, depth_peeling=False, smooth_shading=False, multi_samples=1,
 )
 
-# default is to timelock to participant speech onset,
-# set this to True if you want to timelock to interviewer speech onset instead
-timelock_to_interviewer_onset = True
-
 csp_freqs = config.decoding_csp_freqs
 n_components = 4
 random_state = 42
@@ -66,10 +59,16 @@ n_exclude = 0  # must be zero unless on special branch that supports it
 ch_type = None  # "eeg"  # None means all
 whiten = True  # default is True
 rerun = False  # force re-run / overwrite of existing files
-src_type = 'vol' # default is 'surface' source space
-mode = 'glass_brain' # 'stat_map' # plotting mode for volumne source space
+src_type = 'surf' # surf or vol
+mode = 'glass_brain' # stat_map or glass_brain, vol source space plotting mode
+randomize = False  # False or nonzero int, randomize the trial labels
+decode = "participant"  # "participant" or "interviewer" turns, or "bada"
 
-plot_classification = False
+assert src_type in ("vol", "surf"), src_type
+assert decode in ("participant", "interviewer", "bada"), decode
+mode_extra = f"_{mode[0:5]}" if src_type == "vol" else ""
+
+plot_classification = True
 plot_indiv = False
 plot_correlations = True
 
@@ -77,12 +76,14 @@ plot_correlations = True
 time_bins = np.array(config.decoding_csp_times)
 assert time_bins.ndim == 1
 time_bins = np.c_[time_bins[:-1], time_bins[1:]]
+subjects = config.subjects
+if subjects == "all":
+    subjects = [f"{sub:02d}" for sub in range(1, 33)]
+subjects = [subject for subject in subjects if subject not in config.exclude_subjects]
 del config
 
-subjects = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11',
-            '13', '14', '15', '16', '17', '18', '19', '21', '22', '23', '24',
-            '25', '26', '27', '29', '30', '31', '32'] # excluding subj 12, 20, 28
 use_subjects = subjects  # run all of them (could use e.g. subjects[2:3] just to run 03)
+del subjects
 
 data_path = deriv_path = Path(__file__).parents[1] / "Natural_Conversations_study" / "data"
 analysis_path = deriv_path = Path(__file__).parents[1] / "Natural_Conversations_study" / "analysis"
@@ -113,7 +114,7 @@ n_vertices = sum(len(v) for v in fs_vertices)
 
 title = f"N={len(use_subjects)} subjects, {n_components} components"
 extra = ""
-if n_proj or n_exclude or ch_type or not whiten:
+if n_proj or n_exclude or ch_type or not whiten or src_type != "surf" or randomize or decode != "participant":  # noqa: E501
     extra += "_proc"
     if n_proj:
         extra += f"-{n_proj}proj"
@@ -132,6 +133,12 @@ if n_proj or n_exclude or ch_type or not whiten:
     if src_type == 'vol':
         extra += "-vol"
         title += ", vol src"
+    if randomize:
+        extra += f"-rand{randomize}"
+        title += f", random labels (seed {randomize})"
+    if decode != "participant":
+        extra += f"-{decode}"
+        title += f", {decode}"
 for si, sub in enumerate(use_subjects):  # just 03 for now
     path = deriv_path / 'mne-bids-pipeline' / f'sub-{sub}' / 'meg'
     epochs_fname = path / f'sub-{sub}_task-conversation_proc-clean_epo.fif'
@@ -184,12 +191,43 @@ for si, sub in enumerate(use_subjects):  # just 03 for now
         epochs.add_proj(proj).apply_proj()
 
     # only select the conditions we are interested in
-    epochs = epochs[['conversation', 'repetition']].pick(["meg", "eeg"], exclude="bads")
+    if decode in ("participant", "interviewer"):
+        conds = [f"{decode}_conversation", f"{decode}_repetition"]
+    else:
+        conds = ["ba", "da"]
+    ids = [v for cond in conds for k, v in epochs.event_id.items() if k == cond]
+    assert all(cond in epochs.event_id for cond in conds), (conds, list(epochs.event_id))
+    if decode == "participant":  # based on alphebetical order
+        assert ids == [5, 6], ids
+    elif decode == "interviewer":
+        assert ids == [3, 4], ids
+    else:
+        assert ids == [1, 2], ids
+    epochs = epochs[conds].pick(["meg", "eeg"], exclude="bads")
     if ch_type:
         epochs.pick(ch_type)
     assert epochs.info["bads"] == []  # should have picked good only
     epochs.equalize_event_counts()
     labels = epochs.events[:, 2] # conversation=2, repetition=4
+    assert np.isin(labels, ids).all(), np.unique(labels)
+    if randomize:
+        # Ensure that the randomization gets exactly half wrong (to within one)
+        orig = labels.copy()
+        n_cond = (labels == ids[0]).sum()
+        want = [0] * 7
+        want[ids[0]] = n_cond
+        want[ids[1]] = n_cond
+        assert list(np.bincount(labels, minlength=len(want))) == want
+        n_switch = n_cond // 2
+        rng = np.random.RandomState(randomize)
+        idx_0 = np.where(labels == ids[0])[0]
+        idx_1 = np.where(labels == ids[1])[0]
+        rng.shuffle(idx_0)
+        rng.shuffle(idx_1)
+        labels[idx_0[:n_switch]] = ids[1]
+        labels[idx_1[:n_switch]] = ids[0]
+        assert list(np.bincount(labels, minlength=len(want))) == want
+        np.testing.assert_allclose((orig == labels).mean(), 0.5, atol=1.5 / n_cond)
     ranks = mne.compute_rank(inst=epochs, tol=1e-3, tol_kind="relative")
     rank = sum(ranks.values())
     print(f"  Ranks={ranks} (total={rank})")
@@ -257,7 +295,7 @@ for si, sub in enumerate(use_subjects):  # just 03 for now
                 n_splits=n_splits, random_state=random_state, shuffle=True,
             )
             sub_scores[bi, ti] = cross_val_score(
-                clf, X, labels, cv=cv, verbose=True, scoring="roc_auc",
+                clf, X, labels, cv=cv, verbose=True, scoring="roc_auc", error_score="raise",
             )
             print(
                 f"  {band.ljust(5)} {tmin} - {tmax}s: "
@@ -407,16 +445,16 @@ if plot_classification or plot_indiv:
                 ax.set(xticks=[], yticks=[], aspect="equal")
                 # plot now and add as subplot
                 if src_type == 'vol':
-                    brain = stc.plot(src=src, 
+                    brain = stc.plot(src=src,
                         subject='fsaverage', subjects_dir=subjects_dir, verbose=True,
                         mode=mode,
                         initial_time=bi * len(time_bins) + ti, # idx 0-11, corresponding to the 4 freq bands * 3 time bins
                         #colorbar=False, # need to show colorbar in order to set clim
-                        colormap="viridis", 
+                        colormap="viridis",
                         clim=dict(kind="value", lims=[0, fmid, vmax + 0.5]),
                     )
                     brain.canvas.draw()
-                    img = PIL.Image.frombytes('RGB', 
+                    img = PIL.Image.frombytes('RGB',
                         brain.canvas.get_width_height(), brain.canvas.tostring_rgb()) # Note: brain.canvas.buffer_rgba() doesn't work
                     width, height = img.size
                     ax.imshow(img.crop((0, 50, width-50, height/2))) # tmp hack to remove the trace at bottom & make the img bigger
@@ -440,7 +478,7 @@ if plot_classification or plot_indiv:
         del brain
         fig_path.mkdir(exist_ok=True)
         subj_extra = f"_G{subj_key}" if subj_key else ""
-        fig.savefig(fig_path / f"decoding{extra}_{mode[0:5]}_csp{subj_extra}.png")
+        fig.savefig(fig_path / f"decoding{extra}{mode_extra}_csp{subj_extra}.png")
         if key:
             plt.close(fig=fig)
 
@@ -466,8 +504,10 @@ np.testing.assert_array_equal(co.index, [f"G{subj}" for subj in use_subjects])
 co_kinds = list(co.columns)
 co_values = np.array(co, float)
 del co
-toi = (-1.0, -0.5)
-if timelock_to_interviewer_onset:
+if decode == "participant":
+    toi = (-1.0, -0.5)
+else:
+    assert decode in ("interviewer", "bada")
     toi = (0, 0.5)
 tidx = np.where((time_bins == toi).all(-1))[0]
 assert len(tidx) == 1, tidx
@@ -539,6 +579,7 @@ if plot_correlations:
             len(csp_freqs), len(qois), figsize=(2.5 * len(qois), 7),
             layout="constrained", squeeze=False,
         )
+        fig.suptitle(title)
         cmap = "inferno"
         clim = [0.1, 0.3, 0.5] # [0.15, 0.35, 0.55]
         cmap_show = colormaps.get_cmap(cmap)
@@ -549,14 +590,14 @@ if plot_correlations:
             (1 - w[:, np.newaxis]) * np.array([0.5, 0.5, 0.5, 1])
         )
         cmap_show = colors.LinearSegmentedColormap.from_list('Custom cmap', cmaplist, len(cmaplist))
-        for ci, (qi, title) in enumerate(qois.items()):
+        for ci, (qi, this_title) in enumerate(qois.items()):
             if isinstance(qi, str):
                 assert qi.startswith("SVD")
                 this_a = use_u[:, int(qi[3:]) - 1]
             else:
                 this_q = co_kinds[qi]
                 this_a = co_values[:, qi]
-                assert title.split()[0] in this_q, f"Title not found in {this_q}: {title}"
+                assert this_title.split()[0] in this_q, f"Title not found in {this_q}: {this_title}"
             assert this_a.shape == (len(use_subjects),), this_a.shape
             for bi, band in enumerate(csp_freqs):
                 this_data = subj_data[:, bi, tidx, :]
@@ -567,18 +608,18 @@ if plot_correlations:
                 ax = axes[bi, ci]
                 if src_type == 'vol':
                     stc = mne.VolSourceEstimate(
-                        corrs[:, np.newaxis], 
+                        corrs[:, np.newaxis],
                         vertices=fs_vertices, tmin=0, tstep=1., subject="fsaverage",
                     )
                     src = mne.read_source_spaces(src_fname)
-                    brain = stc.plot(src=src, 
+                    brain = stc.plot(src=src,
                         subject='fsaverage', subjects_dir=subjects_dir, verbose=True,
                         mode=mode,
                         #colorbar=False,
                         colormap="inferno", clim=dict(kind="value", lims=clim),
                     )
                     brain.canvas.draw()
-                    img = PIL.Image.frombytes('RGB', 
+                    img = PIL.Image.frombytes('RGB',
                         brain.canvas.get_width_height(), brain.canvas.tostring_rgb()) # Note: brain.canvas.buffer_rgba() doesn't work
                     width, height = img.size
                     ax.imshow(img.crop((70, 50, width-105, height/2-20))) # tmp hack to remove the trace at bottom & make the img bigger
@@ -595,8 +636,8 @@ if plot_correlations:
                 for key in ax.spines:
                     ax.spines[key].set_visible(False)
                 if bi == 0:
-                    title_short = title.split("-")[0].strip()
-                    desc = title.split("-", 1)[1].strip().rstrip(".")
+                    title_short = this_title.split("-")[0].strip()
+                    desc = this_title.split("-", 1)[1].strip().rstrip(".")
                     desc = desc.lstrip("He/she").strip()
                     desc = "\n".join(textwrap.wrap(desc, 30))
                     ax.set_title(f"{qi}: {title_short}\n{desc}", fontsize=8)
@@ -604,6 +645,8 @@ if plot_correlations:
                     ax.set_ylabel(f"{band}: {scores[:, bi, tidx, :].mean():0.2f}")
         sm = cm.ScalarMappable(norm=colors.Normalize(clim[0], clim[2]), cmap=cmap_show)
         fig.colorbar(sm, ax=axes, label="Kendall's τ", location="bottom", shrink=0.1)
-        fig.savefig(fig_path / f"copresence_correlations{corr_extra}_{mode[0:5]}.png")
+        fig.savefig(
+            fig_path / f"copresence_correlations{corr_extra}{extra}{mode_extra}.png"
+        )
 
 # %%

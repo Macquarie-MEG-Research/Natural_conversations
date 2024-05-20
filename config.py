@@ -10,26 +10,19 @@ For options, see https://mne.tools/mne-bids-pipeline/stable/settings/general.htm
 from pathlib import Path
 import platform
 
-# default is to timelock to participant speech onset,
-# set this to True if you want to timelock to interviewer speech onset instead
-timelock_to_interviewer_onset = True
-
 study_name = "natural-conversations"
-path = Path(__file__).parent / ".." / "Natural_Conversations_study" / "analysis"
 if platform.system() == 'Windows':
-    path = Path("E:/M3/Natural_Conversations_study/analysis")
-bids_root = (    
-    path / f'{study_name}-bids'
-).resolve()
+    analysis_path = Path("E:/M3/Natural_Conversations_study/analysis")
+else:
+    analysis_path = (
+        Path(__file__).parent / ".." / "Natural_Conversations_study" / "analysis"
+    )
+bids_root = (analysis_path / f'{study_name}-bids').resolve()
 interactive = False
 sessions = "all"
 task = "conversation"
-#subjects = "all"  # ["01"]
-# too many drops during conversation blocks (all epochs!)
-#exclude_subjects = ["12", "20", "28"]
-subjects = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11',
-            '13', '14', '15', '16', '17', '18', '19', '21', '22', '23', '24',
-            '25', '26', '27', '29', '30', '31', '32'] # specifying explicitly here as it still tried to process sub-28 even when excluded
+subjects = "all"
+exclude_subjects = ["12", "20", "28", "30"]
 runs = ["01", "02", "03", "04", "05", "06"]
 
 ch_types = ["meg", "eeg"]
@@ -53,20 +46,26 @@ n_proj_eog = dict(n_mag=1, n_eeg=1)
 
 # Epoching
 reject = {'eeg': 150e-6, 'mag': 5000e-15}
-conditions = ["ba", "da", "conversation", "repetition"]
-epochs_tmin = -1.5
-epochs_tmax = 0.5
-if timelock_to_interviewer_onset:
-    epochs_tmin = -0.5
-    epochs_tmax = 1
+conditions = [
+    "ba",
+    "da",
+    "participant_conversation",
+    "participant_repetition",
+    "interviewer_conversation",
+    "interviewer_repetition",
+]
+epochs_tmin = -1.
+epochs_tmax = 1.
 baseline = None
 
 # Decoding
-contrasts = [("conversation", "repetition")]
+contrasts = [
+    ("ba", "da"),
+    ("participant_conversation", "participant_repetition"),
+    ("interviewer_conversation", "interviewer_repetition"),
+]
 decoding_csp = True
-decoding_csp_times = [-1.5, -1, -0.5, 0, 0.5]  # before and after
-if timelock_to_interviewer_onset:
-    decoding_csp_times = [-0.5, 0, 0.5, 1]  # before and after
+decoding_csp_times = [-1, -0.5, 0, 0.5, 1.0]  # before and after
 decoding_csp_freqs = {
     'theta': [4, 7],
     'alpha': [8, 13],

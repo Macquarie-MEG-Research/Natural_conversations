@@ -19,6 +19,7 @@ Done
 - Judy add Yifan's annotations for speaking and listening using (-1, 1) sec segments
 - CSP decoding
 - Eyeball subject drop logs for bad channels
+- Add events for interviewer onset
 
 Todo
 ----
@@ -46,14 +47,8 @@ from scipy.spatial.distance import cdist
 
 import utils  # local module
 
-# default is to timelock to participant speech onset,
-# set this to True if you want to timelock to interviewer speech onset instead
-timelock_to_interviewer_onset = True
-
-n_bas_meg = dict(G03=99, G18=99, G19=98)
-n_das_meg = dict(G15=99, G18=98, G19=99)
-n_bas_eeg = dict(G03=99, G18=99, G19=98)
-n_das_eeg = dict(G15=99, G18=98, G19=99)
+n_bas = dict(G03=99, G18=99, G19=98, G30=98)
+n_das = dict(G15=99, G18=98, G19=99, G30=99)
 drift_tols = dict(G04=0.08, G09=0.026, G15=0.024)
 bad_envelope_subjects = ("G04", "G08", "G11", "G13", "G22")  # naive envelope fails
 empty_map = dict(G02="G01", G05="G06", G13="G01", G18="G17", G20="G19")
@@ -73,7 +68,10 @@ eeg_renames = {str(ci): ch for ci, ch in enumerate(eeg_map, 1)}
 ch_types_map = dict(ECG="ecg", EOG="eog")
 min_dur = 0.002  # for events
 
-subjects = tuple(f"G{s:02d}" for s in range(1, 33))
+subjects = tuple(
+    f"G{s:02d}" for s in range(1, 33)
+    if s != 28  # cannot align block 3 because the MEG is missing the alignment trigger
+)
 manual_coreg = True  # use Judy's manual coregistration -trans.fif files to adjust coreg
 blocks = dict(  # to BIDS task and run
     B1=("conversation", "01"),
@@ -86,7 +84,14 @@ blocks = dict(  # to BIDS task and run
     resting=("rest", None),
 )
 assert "empty" not in blocks
-event_id = dict(ba=1, da=2, conversation=3, repetition=4)
+event_id = dict(
+    ba=1,
+    da=2,
+    participant_conversation=3,
+    participant_repetition=4,
+    interviewer_conversation=5,
+    interviewer_repetition=6,
+)
 
 bad_coils = {
     "G01": [0],
@@ -164,7 +169,7 @@ def get_participant_turns(*, subject, block):
     assert len(block) == 2 and block[0] == "B", block
     block_num = int(block[1])
     assert block_num in range(1, 6)
-    ttype = 'conversation' if block_num % 2 else 'repetition'
+    ttype = "participant_" + ("conversation" if block_num % 2 else "repetition")
     print(f"    {len(participant_turns):2d} {ttype} turns")
     onset = []
     duration = []
@@ -192,7 +197,7 @@ def get_interviewer_turns(*, subject, block):
     assert len(block) == 2 and block[0] == "B", block
     block_num = int(block[1])
     assert block_num in range(1, 6)
-    ttype = 'conversation' if block_num % 2 else 'repetition'
+    ttype = "interviewer_" + ("conversation" if block_num % 2 else "repetition")
     print(f"    {len(interviewer_turns):2d} {ttype} turns")
     onset = []
     duration = []
@@ -354,14 +359,14 @@ for subject in subjects:
             #     pe = eda[:, 0] / raw_eeg.info["sfreq"] + (mda[0, 0] / raw_meg.info["sfreq"] - eda[0, 0] / raw_eeg.info["sfreq"])
             #     for val in pe:
             #         ax.axvline(val, color='r', lw=0.5, zorder=3)
-            assert len(mba) == n_bas_meg.get(subject, 100), len(mba)
-            assert len(mda) == n_das_meg.get(subject, 100), len(mda)
-            assert len(eba) == n_bas_eeg.get(subject, 100), len(eba)
-            assert len(eda) == n_das_eeg.get(subject, 100), len(eda)
-            #assert len(mba) > 95
-            #assert len(mda) > 95
-            #assert len(eba) > 95
-            #assert len(eda) > 95
+            assert len(mba) == n_bas.get(subject, 100), len(mba)
+            assert len(mda) == n_das.get(subject, 100), len(mda)
+            assert len(eba) == n_bas.get(subject, 100), len(eba)
+            assert len(eda) == n_das.get(subject, 100), len(eda)
+            assert len(mba) > 95
+            assert len(mda) > 95
+            assert len(eba) > 95
+            assert len(eda) > 95
             e_ev = e_ev[:len(m_ev)]
             np.testing.assert_array_equal(m_ev[:, 2], e_ev[:, 2])
             m = m_ev[:, 0] / raw_meg.info["sfreq"] - raw_meg.first_time
@@ -374,22 +379,20 @@ for subject in subjects:
             # Correct jitter
             events, _ = utils.triggerCorrection(raw_meg, subject, plot=False)
             events[:, 2] -= 180  # 181, 182 -> 1, 2
-            assert np.in1d(events[:, 2], (1, 2)).all()
+            assert np.isin(events[:, 2], (1, 2)).all()
             max_off = cdist(m_ev[:, :1], events[:, :1]).min(axis=0).max()
             assert max_off < 50, max_off
         elif block == "resting":
             events = None
         else:
             assert block in ("B1", "B2", "B3", "B4", "B5"), block
-            onset, duration, description = get_participant_turns(
-                subject=subject, block=block,
-            )
-            if timelock_to_interviewer_onset:
-                onset, duration, description = get_interviewer_turns(
-                    subject=subject, block=block,
-                )
-            raw_meg.set_annotations(mne.Annotations(onset, duration, description))
+            annot = mne.Annotations([], [], [])
+            annot.append(*get_participant_turns(subject=subject, block=block))
+            annot.append(*get_interviewer_turns(subject=subject, block=block))
+            raw_meg.set_annotations(annot)
+            del annot
             events = None
+
         # Add bads
         assert raw_meg.info["bads"] == []
         if subj_bads is None:  # first block
