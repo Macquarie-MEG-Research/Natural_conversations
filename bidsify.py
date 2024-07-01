@@ -117,8 +117,8 @@ del share_root
 if platform.system() == 'Windows':
     analysis_root = Path("D:/Work/analysis_ME206/Natural_Conversations_study/analysis")
     data_root = Path("D:/Work/analysis_ME206/data")
-analysis_root = Path("/mnt/d/Work/analysis_ME206/Natural_Conversations_study/analysis")
-data_root = Path("/mnt/d/Work/analysis_ME206/data")
+#analysis_root = Path("/mnt/d/Work/analysis_ME206/Natural_Conversations_study/analysis")
+#data_root = Path("/mnt/d/Work/analysis_ME206/data")
 bids_root = analysis_root / f"{name}-bids"
 
 bids_root.mkdir(exist_ok=True)
