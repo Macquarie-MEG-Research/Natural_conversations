@@ -114,11 +114,12 @@ share_root = Path(__file__).parents[1] / "Natural_Conversations_study"
 analysis_root = share_root / "analysis"
 data_root = share_root / "data"
 del share_root
-bids_root = analysis_root / f"{name}-bids"
 if platform.system() == 'Windows':
     analysis_root = Path("D:/Work/analysis_ME206/Natural_Conversations_study/analysis")
     data_root = Path("D:/Work/analysis_ME206/data")
-    bids_root = Path("E:/M3/Natural_Conversations_study/analysis") / f"{name}-bids"
+analysis_root = Path("/mnt/d/Work/analysis_ME206/Natural_Conversations_study/analysis")
+data_root = Path("/mnt/d/Work/analysis_ME206/data")
+bids_root = analysis_root / f"{name}-bids"
 
 bids_root.mkdir(exist_ok=True)
 mne_bids.make_dataset_description(

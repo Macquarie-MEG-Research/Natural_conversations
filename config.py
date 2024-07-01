@@ -12,7 +12,7 @@ import platform
 
 study_name = "natural-conversations"
 if platform.system() == 'Windows':
-    analysis_path = Path("E:/M3/Natural_Conversations_study/analysis")
+    analysis_path = Path("D:/Work/analysis_ME206/Natural_Conversations_study/analysis")
 else:
     analysis_path = (
         Path(__file__).parent / ".." / "Natural_Conversations_study" / "analysis"
@@ -29,7 +29,7 @@ ch_types = ["meg", "eeg"]
 data_type = "meg"
 eeg_reference = "average"
 
-l_freq = 0.5
+l_freq = 1.0
 h_freq = 45.0
 h_trans_bandwidth = 5
 epochs_decim = 5
@@ -71,6 +71,7 @@ decoding_csp_freqs = {
     'alpha': [8, 13],
     'beta': [14, 30],
     'gamma': [31, 45],
+    #'broadband': [4, 45], # makes the plot weird in html report due to overlapping freqs
 }
 
 # TFRs
