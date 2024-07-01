@@ -27,11 +27,12 @@ if src_type != 'surface':
 # specify how many SSP projectors to use for speech artifact removal
 n_proj = 4  # 1 means: 1 for MEG & 1 for EEG
 
-this_run = f'{n_proj}-proj'
-#this_run = "ba+da__ba-da" # for the "ba+da" and "ba-da" sanity checks
-
 # which conditions to compare in ROI analysis
-conds_ROI = ['interviewer_conversation','interviewer_repetition'] #['participant_conversation','participant_repetition']
+comparison = "participant" # "interviewer" or "participant"
+conds_ROI = [f"{comparison}_conversation", f"{comparison}_repetition"]
+
+this_run = f"{n_proj}-proj"
+#this_run = "ba+da__ba-da" # for the "ba+da" and "ba-da" sanity checks
 
 subjects = config.subjects
 if subjects == "all":
@@ -53,9 +54,10 @@ if platform.system() == 'Windows':
 deriv_path = analysis_path / "natural-conversations-bids" / "derivatives"
 source_results_dir = analysis_path / "results" / f"source-{source_method}-{src_type}" / this_run
 figures_dir = analysis_path / "figures" / f"source-{source_method}-{src_type}" / this_run
+figures_ROI_dir = analysis_path / "figures" / f"source-{source_method}-{src_type}" / this_run / f"{comparison}_ROI"
 # create the folders if needed
 source_results_dir.mkdir(parents=True, exist_ok=True)
-figures_dir.mkdir(parents=True, exist_ok=True)
+figures_ROI_dir.mkdir(parents=True, exist_ok=True)
 
 subjects_dir = deriv_path / "freesurfer" / "subjects"
 subject = 'fsaverage'
@@ -285,7 +287,7 @@ for cond in conds:
 # Extract ROI time courses from source estimates
 
 src = mne.read_source_spaces(src_fname)
-Path(op.join(figures_dir, "all_ROIs")).mkdir(parents=True, exist_ok=True)
+Path(op.join(figures_ROI_dir, "all_ROIs")).mkdir(parents=True, exist_ok=True)
 
 if src_type == 'vol':
     # choose atlas for parcellation
@@ -298,7 +300,7 @@ if src_type == 'vol':
     #roi_idx = label_names.index(rois[0])
 
     for label_name in rois:
-        Path(op.join(figures_dir, label_name)).mkdir(parents=True, exist_ok=True)
+        Path(op.join(figures_ROI_dir, label_name)).mkdir(parents=True, exist_ok=True)
 
         # Plot GA ROI time series
         fig, axes = plt.subplots(1, layout="constrained")
@@ -312,8 +314,8 @@ if src_type == 'vol':
         axes.set(xlabel="Time (ms)", ylabel="Activation")
         axes.legend()
 
-        fig.savefig(op.join(figures_dir, label_name, "GA.png"))
-        fig.savefig(op.join(figures_dir, "all_ROIs", label_name + "_GA.png")) # to save an additional copy of all GA plots into one folder
+        fig.savefig(op.join(figures_ROI_dir, label_name, "GA.png"))
+        fig.savefig(op.join(figures_ROI_dir, "all_ROIs", label_name + "_GA.png")) # to save an additional copy of all GA plots into one folder
         plt.close(fig)
 
         # Plot individual-subjects ROI time series
@@ -331,7 +333,7 @@ if src_type == 'vol':
             axes.set(xlabel="Time (ms)", ylabel="Activation")
             axes.legend()
 
-            fig.savefig(op.join(figures_dir, label_name, "sub-" + sub + ".png"))
+            fig.savefig(op.join(figures_ROI_dir, label_name, "sub-" + sub + ".png"))
             plt.close(fig)
 
 elif src_type == 'surface':
@@ -363,7 +365,7 @@ elif src_type == 'surface':
         if label_name == 'G_cingul-Post-dorsal-rh + G_cingul-Post-ventral-rh':
             label_name = 'G_cingul-Post-rh'
 
-        Path(op.join(figures_dir, label_name)).mkdir(parents=True, exist_ok=True)
+        Path(op.join(figures_ROI_dir, label_name)).mkdir(parents=True, exist_ok=True)
 
         # Plot GA ROI time series
         fig, axes = plt.subplots(1, layout="constrained")
@@ -377,8 +379,8 @@ elif src_type == 'surface':
         axes.set(xlabel="Time (ms)", ylabel="Activation")
         axes.legend()
 
-        fig.savefig(op.join(figures_dir, label_name, "GA.png"))
-        fig.savefig(op.join(figures_dir, "all_ROIs", label_name + "_GA.png")) # to save an additional copy of all GA plots into one folder
+        fig.savefig(op.join(figures_ROI_dir, label_name, "GA.png"))
+        fig.savefig(op.join(figures_ROI_dir, "all_ROIs", label_name + "_GA.png")) # to save an additional copy of all GA plots into one folder
         plt.close(fig)
         
         # Plot individual-subjects ROI time series
@@ -396,5 +398,5 @@ elif src_type == 'surface':
             axes.set(xlabel="Time (ms)", ylabel="Activation")
             axes.legend()
 
-            fig.savefig(op.join(figures_dir, label_name, "sub-" + sub + ".png"))
+            fig.savefig(op.join(figures_ROI_dir, label_name, "sub-" + sub + ".png"))
             plt.close(fig)
