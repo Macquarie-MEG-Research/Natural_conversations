@@ -104,7 +104,8 @@ for sub in use_subjects:
     rank = sum(ranks.values())
     print(f"  Ranks={ranks} (total={rank})")
 
-    if n_proj or src_type == 'vol':
+    # TEMP - always recreate inv for now, until we change to free orientation in the pipeline
+    if 1: #n_proj or src_type == 'vol':
         # Recreate inverse taking into account additional projections
         cov = mne.read_cov(cov_fname)
         if src_type == 'vol':
@@ -123,7 +124,7 @@ for sub in use_subjects:
         else: # surface source space
             fwd = mne.read_forward_solution(fwd_fname)
             inv = mne.minimum_norm.make_inverse_operator(
-                epochs.info, fwd, cov, loose=0.2, depth=0.8, rank=ranks,
+                epochs.info, fwd, cov, loose=1., depth=0.8, rank=ranks, # use free orientation, so that the surface- and volume-based results are more comparable
             )
     else: # load the default inv solution (surface source space; no SSP projectors for speech artifact removal)
         inv = mne.minimum_norm.read_inverse_operator(inv_fname)
@@ -226,20 +227,15 @@ for cond in conds:
 
     # initialise the sum array to correct size using first subject's stc
     stc = mne.read_source_estimate(stc_files[0])
-    stcs_sum = stc.data # this contains lh & rh vertices combined together
-    # there are also separate fields for the 2 hemis (stc.lh_data, stc.rh_data),
-    # but their content cannot be set directly, so just use the combined one
 
     # read in the stc for each subsequent subject, add to the sum array
     for fname in stc_files[1:]:
-        stc = mne.read_source_estimate(fname)
-        stcs_sum = stcs_sum + stc.data
+        stc += mne.read_source_estimate(fname)
 
     # divide by number of files
-    stcs_GA = stcs_sum / len(stc_files)
+    stc /= len(stc_files)
 
-    # feed into the dummy stc structure
-    stc.data = stcs_GA
+    # store in the GA struct
     GA_stcs[cond] = stc
 
     
@@ -252,7 +248,7 @@ for cond in conds:
         fig = stc.plot(src=src, colormap="viridis", 
             subject='fsaverage', subjects_dir=subjects_dir, verbose=True,
             initial_time=initial_time)
-        fig.savefig(op.join(figures_dir, 'GA_' + cond + '.png'))
+        fig.savefig(figures_dir / f'GA_{cond}.png')
         plt.close(fig)
         # seems like we can't save movies for these volume-based stcs
 
@@ -272,8 +268,8 @@ for cond in conds:
         brain = stc.plot(**surfer_kwargs)
         #brain.add_foci(vertno_max, coords_as_verts=True, hemi=hemi, color='blue',
         #            scale_factor=0.6, alpha=0.5)
-        brain.save_image(op.join(figures_dir, 'GA_' + str(initial_time) + 's_' + cond + '.png'))
-        brain.save_movie(op.join(figures_dir, 'GA-' + cond + '.mov'), 
+        brain.save_image(figures_dir / f'GA_{str(initial_time)}s_{cond}.png')
+        brain.save_movie(figures_dir / f'GA-{cond}.mov', 
             tmin=-1, tmax=1, interpolation='linear',
             time_dilation=50, time_viewer=True) 
           
@@ -287,11 +283,11 @@ for cond in conds:
 # Extract ROI time courses from source estimates
 
 src = mne.read_source_spaces(src_fname)
-Path(op.join(figures_ROI_dir, "all_ROIs")).mkdir(parents=True, exist_ok=True)
+(figures_ROI_dir / "all_ROIs").mkdir(parents=True, exist_ok=True)
 
 if src_type == 'vol':
     # choose atlas for parcellation
-    fname_aseg = op.join(subjects_dir, subject, 'mri', 'aparc.a2009s+aseg.mgz') # aparc = cortical; aseg = subcortical
+    fname_aseg = subjects_dir / subject / 'mri' / 'aparc.a2009s+aseg.mgz' # aparc = cortical; aseg = subcortical
     label_names = mne.get_volume_labels_from_aseg(fname_aseg)
     rois = ['ctx_lh_G_cingul-Post-dorsal','ctx_lh_G_cingul-Post-ventral','ctx_rh_G_cingul-Post-dorsal','ctx_rh_G_cingul-Post-ventral',
             'ctx_lh_G_pariet_inf-Supramar','ctx_rh_G_pariet_inf-Supramar','ctx_lh_G_precuneus','ctx_rh_G_precuneus',
@@ -300,7 +296,7 @@ if src_type == 'vol':
     #roi_idx = label_names.index(rois[0])
 
     for label_name in rois:
-        Path(op.join(figures_ROI_dir, label_name)).mkdir(parents=True, exist_ok=True)
+        (figures_ROI_dir / label_name).mkdir(parents=True, exist_ok=True)
 
         # Plot GA ROI time series
         fig, axes = plt.subplots(1, layout="constrained")
@@ -314,8 +310,8 @@ if src_type == 'vol':
         axes.set(xlabel="Time (ms)", ylabel="Activation")
         axes.legend()
 
-        fig.savefig(op.join(figures_ROI_dir, label_name, "GA.png"))
-        fig.savefig(op.join(figures_ROI_dir, "all_ROIs", label_name + "_GA.png")) # to save an additional copy of all GA plots into one folder
+        fig.savefig(figures_ROI_dir / label_name / "GA.png")
+        fig.savefig(figures_ROI_dir / "all_ROIs" / f"{label_name}_GA.png") # to save an additional copy of all GA plots into one folder
         plt.close(fig)
 
         # Plot individual-subjects ROI time series
@@ -333,7 +329,7 @@ if src_type == 'vol':
             axes.set(xlabel="Time (ms)", ylabel="Activation")
             axes.legend()
 
-            fig.savefig(op.join(figures_ROI_dir, label_name, "sub-" + sub + ".png"))
+            fig.savefig(figures_ROI_dir / label_name / f"sub-{sub}.png")
             plt.close(fig)
 
 elif src_type == 'surface':
@@ -365,7 +361,7 @@ elif src_type == 'surface':
         if label_name == 'G_cingul-Post-dorsal-rh + G_cingul-Post-ventral-rh':
             label_name = 'G_cingul-Post-rh'
 
-        Path(op.join(figures_ROI_dir, label_name)).mkdir(parents=True, exist_ok=True)
+        (figures_ROI_dir / label_name).mkdir(parents=True, exist_ok=True)
 
         # Plot GA ROI time series
         fig, axes = plt.subplots(1, layout="constrained")
@@ -379,8 +375,8 @@ elif src_type == 'surface':
         axes.set(xlabel="Time (ms)", ylabel="Activation")
         axes.legend()
 
-        fig.savefig(op.join(figures_ROI_dir, label_name, "GA.png"))
-        fig.savefig(op.join(figures_ROI_dir, "all_ROIs", label_name + "_GA.png")) # to save an additional copy of all GA plots into one folder
+        fig.savefig(figures_ROI_dir / label_name / "GA.png")
+        fig.savefig(figures_ROI_dir / "all_ROIs" / f"{label_name}_GA.png") # to save an additional copy of all GA plots into one folder
         plt.close(fig)
         
         # Plot individual-subjects ROI time series
@@ -398,5 +394,5 @@ elif src_type == 'surface':
             axes.set(xlabel="Time (ms)", ylabel="Activation")
             axes.legend()
 
-            fig.savefig(op.join(figures_ROI_dir, label_name, "sub-" + sub + ".png"))
+            fig.savefig(figures_ROI_dir / label_name / f"sub-{sub}.png")
             plt.close(fig)
