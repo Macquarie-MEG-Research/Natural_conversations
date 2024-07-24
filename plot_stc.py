@@ -2,8 +2,8 @@ import mne
 import os
 
 SUBJECTS_DIR = "/Users/em18033/Library/CloudStorage/OneDrive-SharedLibraries-MacquarieUniversity/Natural_Conversations_study - Documents/analysis/natural-conversations-bids/derivatives/freesurfer/subjects"
-STC_DIR = "/Users/em18033/Library/CloudStorage/OneDrive-AUTUniversity/Projects/Conversational_AI/Test_output_4/"
-DATA_FILE = "sub-01_task-ba_broadband_lcmv_beamformer_time_averaged-stc-lh.stc"
+STC_DIR = "/Users/em18033/Library/CloudStorage/OneDrive-AUTUniversity/Projects/Conversational_AI/Test_output_1/"
+DATA_FILE = "sub-01_task-ba_broadband_lcmv_beamformer_averaged-stc-lh.stc"
 
 
 # Load the saved STC file (replace with your actual file path)

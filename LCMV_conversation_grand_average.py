@@ -5,7 +5,7 @@ from glob import glob
 import re
 
 # Set the path to the folder containing the .stc files
-stc_folder = "/Users/em18033/Library/CloudStorage/OneDrive-AUTUniversity/Projects/Conversational_AI/LCMV_analysis"
+stc_folder = "/Users/em18033/Library/CloudStorage/OneDrive-AUTUniversity/Projects/Conversational_AI/LCMV_output/"
 
 # Create a subfolder for average STCs
 average_folder = os.path.join(stc_folder, "average_stc")

@@ -14,7 +14,7 @@ SAVE_CROPPED_DATA_H5 = False
 
 def setup_directories():
     data_dir = "/Users/em18033/Library/CloudStorage/OneDrive-AUTUniversity/Projects/Conversational_AI/Test_data/"
-    output_dir = "/Users/em18033/Library/CloudStorage/OneDrive-AUTUniversity/Projects/Conversational_AI/Test_output2"
+    output_dir = "/Users/em18033/Library/CloudStorage/OneDrive-AUTUniversity/Projects/Conversational_AI/Test_output_1"
     os.makedirs(output_dir, exist_ok=True)
     return data_dir, output_dir
 
@@ -137,6 +137,15 @@ def prepare_epochs(all_epochs, noise_raw):
             tmin=tmin, tmax=tmin + (len(noise_epochs.times) - 1) / sfreq
         )
 
+    # Crop 200 ms from each end
+    crop_time = 0.2
+    all_epochs = all_epochs.copy().crop(
+        tmin=all_epochs.tmin + crop_time, tmax=all_epochs.tmax - crop_time
+    )
+    noise_epochs = noise_epochs.copy().crop(
+        tmin=noise_epochs.tmin + crop_time, tmax=noise_epochs.tmax - crop_time
+    )
+
     print(f"After cropping - Task epochs n_samples: {len(all_epochs.times)}")
     print(f"After cropping - Noise epochs n_samples: {len(noise_epochs.times)}")
 
@@ -161,7 +170,7 @@ def filter_data(epochs, fmin, fmax):
     return epochs.copy().filter(fmin, fmax)
 
 
-def create_and_apply_beamformer(epochs_filt, fwd, noise_epochs_filt):
+def create_lcmv_filter(epochs_filt, fwd, noise_epochs_filt):
     data_cov = compute_covariance(epochs_filt, tmin=None, tmax=None, method="empirical")
     noise_cov = compute_covariance(
         noise_epochs_filt, tmin=None, tmax=None, method="empirical"
@@ -174,6 +183,10 @@ def create_and_apply_beamformer(epochs_filt, fwd, noise_epochs_filt):
         reg=0.05,
         pick_ori="normal",
     )
+    return filters_lcmv
+
+
+def apply_lcmv_filter(epochs_filt, filters_lcmv):
     return apply_lcmv_epochs(epochs_filt, filters_lcmv, return_generator=True)
 
 
@@ -248,18 +261,7 @@ def compute_source_estimate(
         tstep=epochs.times[1] - epochs.times[0],
         subject="fsaverage",
     )
-    print(
-        f"Original STC time range: {averaged_stc.times[0]:.3f}s to {averaged_stc.times[-1]:.3f}s"
-    )
-    print(f"Original STC time points: {len(averaged_stc.times)}")
 
-    # Apply time-domain averaging
-    time_averaged_stc = average_stc_in_time(averaged_stc, window_size=0.1)
-
-    print(
-        f"Time-averaged STC time range: {time_averaged_stc.times[0]:.3f}s to {time_averaged_stc.times[-1]:.3f}s"
-    )
-    print(f"Time-averaged STC time points: {len(time_averaged_stc.times)}")
     # Create time-domain averaged version
     time_averaged_stc = average_stc_in_time(averaged_stc, window_size=0.1)
 
@@ -332,31 +334,39 @@ def process_subject(subject, data_dir, output_dir):
             "gamma": (30, 40),
         }
 
+        conditions = [
+            "ba",
+            "da",
+            "interviewer_conversation",
+            "interviewer_repetition",
+            "participant_conversation",
+            "participant_repetition",
+        ]  # TODO see below re: removing localisers
+
         for band_name, (fmin, fmax) in frequency_bands.items():
             print(f"Processing {band_name} band ({fmin}-{fmax} Hz)")
             filtered_epochs = filter_data(combined_epochs, fmin, fmax)
+
+            # Create a common filter using all conditions
+            all_condition_epochs = mne.concatenate_epochs(
+                [filtered_epochs[cond] for cond in conditions]
+            )
+            noise_epochs = filtered_epochs["noise"]
+            common_filter = create_lcmv_filter(
+                all_condition_epochs, fwd, noise_epochs
+            )  # TODO don't include localisers? Mayby do a separate run for each type so that code doesn't become too complex?
 
             averaged_stc_dict = {}
             roi_time_courses_dict = {}
             time_averaged_stc_dict = {}
             time_averaged_roi_time_courses_dict = {}
 
-            conditions = [
-                "ba",
-                "da",
-                "interviewer_conversation",
-                "interviewer_repetition",
-                "participant_conversation",
-                "participant_repetition",
-            ]
-
             for condition in conditions:
                 condition_epochs = filtered_epochs[condition]
-                noise_epochs = filtered_epochs["noise"]
 
-                epochs_stcs = create_and_apply_beamformer(
-                    condition_epochs, fwd, noise_epochs
-                )
+                # Apply the common filter to each condition
+                epochs_stcs = apply_lcmv_filter(condition_epochs, common_filter)
+
                 (
                     averaged_stc,
                     roi_time_courses,
@@ -405,11 +415,11 @@ def process_subject(subject, data_dir, output_dir):
                 time_avg_diff_stc.save(time_avg_diff_fname, overwrite=True)
 
         print(f"Finished processing {subject}")
+        update_progress(subject, output_dir)
     except Exception as e:
         print(f"Error processing {subject}: {str(e)}")
         import traceback
-
-        traceback.print_exc()
+        traceback.print_exc(
 
 
 def update_progress(subject, output_dir):
@@ -428,9 +438,7 @@ def get_processed_subjects(output_dir):
 
 def main():
     data_dir, output_dir = setup_directories()
-    subject_dirs = [
-        d for d in os.listdir(data_dir) if d.startswith("sub-") and d[4:].isdigit()
-    ]
+    subject_dirs = [d for d in os.listdir(data_dir) if d.startswith("sub-") and d[4:].isdigit()]
 
     processed_subjects = get_processed_subjects(output_dir)
 
@@ -439,7 +447,7 @@ def main():
             print(f"Skipping {subject}: Already processed")
             continue
         process_subject(subject, data_dir, output_dir)
-        update_progress(subject, output_dir)
+        # Removed: update_progress(subject, output_dir)
 
     print("All subjects processed")
 
