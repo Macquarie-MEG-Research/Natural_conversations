@@ -5,7 +5,6 @@ import h5py
 from mne.beamformer import apply_lcmv_epochs, make_lcmv
 from mne.cov import compute_covariance
 from scipy.signal import hilbert
-import matplotlib.pyplot as plt
 
 # Configuration options - change as needed saving
 # cropped data takes up a lot of space
@@ -244,25 +243,25 @@ def compute_source_estimate(
     n_epochs = 0
 
     vertices_lh, vertices_rh = fwd["src"][0]["vertno"], fwd["src"][1]["vertno"]
+    if SAVE_CROPPED_DATA_H5:
+        with h5py.File(
+            os.path.join(
+                output_dir, f"{subject}_task-{condition}_{band_name}_epochs_stcs.h5"
+            ),
+            "w",
+        ) as h5f:
+            for i, stc in enumerate(epochs_stcs):
+                analytic_signal = hilbert(stc.data, axis=1)
+                averaged_data += analytic_signal
+                all_data.append(analytic_signal)
+                n_epochs += 1
 
-    with h5py.File(
-        os.path.join(
-            output_dir, f"{subject}_task-{condition}_{band_name}_epochs_stcs.h5"
-        ),
-        "w",
-    ) as h5f:
-        for i, stc in enumerate(epochs_stcs):
-            analytic_signal = hilbert(stc.data, axis=1)
-            averaged_data += analytic_signal
-            all_data.append(analytic_signal)
-            n_epochs += 1
+                h5f.create_dataset(f"epoch_{i}", data=stc.data)
 
-            h5f.create_dataset(f"epoch_{i}", data=stc.data)
-
-        h5f.attrs["subject"] = subject
-        h5f.attrs["condition"] = condition
-        h5f.attrs["band_name"] = band_name
-        h5f.attrs["n_epochs"] = n_epochs
+            h5f.attrs["subject"] = subject
+            h5f.attrs["condition"] = condition
+            h5f.attrs["band_name"] = band_name
+            h5f.attrs["n_epochs"] = n_epochs
 
     if n_epochs == 0:
         raise ValueError("No epochs were processed")
