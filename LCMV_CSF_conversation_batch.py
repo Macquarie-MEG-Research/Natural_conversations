@@ -14,8 +14,8 @@ SAVE_CROPPED_DATA_H5 = False
 
 
 def setup_directories():
-    data_dir = "/Users/em18033/Library/CloudStorage/OneDrive-AUTUniversity/Projects/Conversational_AI/Test_data/"
-    output_dir = "/Users/em18033/Library/CloudStorage/OneDrive-AUTUniversity/Projects/Conversational_AI/Test_output_1"
+    data_dir = "/Users/em18033/Library/CloudStorage/OneDrive-SharedLibraries-MacquarieUniversity/Natural_Conversations_study - Documents/analysis/natural-conversations-bids/derivatives/mne-bids-pipeline-20240628/"
+    output_dir = "/Users/em18033/Library/CloudStorage/OneDrive-AUTUniversity/Projects/Conversational_AI/LCMV_output/"
     os.makedirs(output_dir, exist_ok=True)
     return data_dir, output_dir
 
