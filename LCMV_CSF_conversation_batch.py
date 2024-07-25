@@ -5,11 +5,13 @@ import h5py
 from mne.beamformer import apply_lcmv_epochs, make_lcmv
 from mne.cov import compute_covariance
 from scipy.signal import hilbert
+import matplotlib.pyplot as plt
 
 # Configuration options - change as needed saving
 # cropped data takes up a lot of space
 EQUALIZE_EVENT_COUNTS = False
 SAVE_CROPPED_DATA_H5 = False
+DIAGNOSTIC_PLOTS = False
 
 
 def setup_directories():
@@ -146,8 +148,12 @@ def prepare_epochs(all_epochs, noise_raw):
         tmin=noise_epochs.tmin + crop_time, tmax=noise_epochs.tmax - crop_time
     )
 
-    print(f"After cropping - Task epochs n_samples: {len(all_epochs.times)}")
-    print(f"After cropping - Noise epochs n_samples: {len(noise_epochs.times)}")
+    print(
+        f"After cropping - Task epochs tmin: {all_epochs.tmin}, tmax: {all_epochs.tmax}, n_samples: {len(all_epochs.times)}"
+    )
+    print(
+        f"After cropping - Noise epochs tmin: {noise_epochs.tmin}, tmax: {noise_epochs.tmax}, n_samples: {len(noise_epochs.times)}"
+    )
 
     all_epochs.metadata = None
     noise_epochs.metadata = None
@@ -159,6 +165,38 @@ def prepare_epochs(all_epochs, noise_raw):
 
     print(f"Final combined_epochs: {len(combined_epochs)}")
     print(f"Time points: {len(combined_epochs.times)}")
+    print(f"Combined epochs tmin: {combined_epochs.tmin}, tmax: {combined_epochs.tmax}")
+    if DIAGNOSTIC_PLOTS:
+        # Diagnostic plots
+        plt.figure(figsize=(15, 10))
+
+        plt.subplot(311)
+        plt.plot(combined_epochs.times, combined_epochs.get_data().mean(axis=(0, 1)))
+        plt.title("Average of all channels and epochs")
+        plt.xlabel("Time (s)")
+
+        plt.subplot(312)
+        plt.plot(combined_epochs.times, combined_epochs.get_data()[0, 0, :])
+        plt.title("First channel of first epoch")
+        plt.xlabel("Time (s)")
+
+        plt.subplot(313)
+        plt.imshow(
+            combined_epochs.get_data().mean(axis=0),
+            aspect="auto",
+            extent=[
+                combined_epochs.times[0],
+                combined_epochs.times[-1],
+                0,
+                combined_epochs.get_data().shape[1],
+            ],
+        )
+        plt.title("Heatmap of all channels (averaged across epochs)")
+        plt.xlabel("Time (s)")
+        plt.ylabel("Channels")
+
+        plt.tight_layout()
+        plt.show()
 
     if EQUALIZE_EVENT_COUNTS:
         combined_epochs.equalize_event_counts()
@@ -211,6 +249,26 @@ def load_parcellation():
 def compute_source_estimate(
     epochs_stcs, fwd, epochs, subject, output_dir, condition, band_name, parcellation
 ):
+    """Computes source estimates, ROI time courses, and saves them.
+
+    Args:
+        epochs_stcs (list): List of SourceEstimate objects.
+        fwd (dict): Forward solution dictionary.
+        epochs (mne.Epochs): Evoked data object.
+        subject (str): Subject name.
+        output_dir (str): Output directory path.
+        condition (str): Experimental condition.
+        band_name (str): Band name.
+        parcellation (mne.Parcellation): Parcellation object.
+
+    Returns:
+        tuple: A tuple containing the following elements:
+            - averaged_stc (mne.SourceEstimate): The averaged source estimate.
+            - roi_time_courses (np.ndarray): Original ROI time courses.
+            - time_averaged_stc (mne.SourceEstimate): Time-averaged source estimate.
+            - time_averaged_roi_time_courses (np.ndarray): Time-averaged ROI time courses.
+    """
+
     n_sources = fwd["nsource"]
     n_times = len(epochs.times)
     averaged_data = np.zeros((n_sources, n_times), dtype=complex)
@@ -219,33 +277,24 @@ def compute_source_estimate(
 
     vertices_lh, vertices_rh = fwd["src"][0]["vertno"], fwd["src"][1]["vertno"]
 
-    if SAVE_CROPPED_DATA_H5:
-        h5_filename = f"{subject}_task-{condition}_{band_name}_epochs_stcs.h5"
-        h5_filepath = os.path.join(output_dir, h5_filename)
-        h5f = h5py.File(h5_filepath, "w")
+    with h5py.File(
+        os.path.join(
+            output_dir, f"{subject}_task-{condition}_{band_name}_epochs_stcs.h5"
+        ),
+        "w",
+    ) as h5f:
+        for i, stc in enumerate(epochs_stcs):
+            analytic_signal = hilbert(stc.data, axis=1)
+            averaged_data += analytic_signal
+            all_data.append(analytic_signal)
+            n_epochs += 1
 
-    crop_time = 0.1  # in seconds
-    crop_samples = int(crop_time * epochs.info["sfreq"])
+            h5f.create_dataset(f"epoch_{i}", data=stc.data)
 
-    # Calculate the new time array after cropping
-    cropped_times = epochs.times[crop_samples:-crop_samples]
-
-    for i, stc in enumerate(epochs_stcs):
-        cropped_data = stc.data[:, crop_samples:-crop_samples]
-        analytic_signal = hilbert(cropped_data, axis=1)
-        averaged_data[:, crop_samples:-crop_samples] += analytic_signal
-        all_data.append(analytic_signal)
-        n_epochs += 1
-
-        if SAVE_CROPPED_DATA_H5:
-            h5f.create_dataset(f"epoch_{i}", data=cropped_data)
-
-    if SAVE_CROPPED_DATA_H5:
         h5f.attrs["subject"] = subject
         h5f.attrs["condition"] = condition
         h5f.attrs["band_name"] = band_name
         h5f.attrs["n_epochs"] = n_epochs
-        h5f.close()
 
     if n_epochs == 0:
         raise ValueError("No epochs were processed")
@@ -253,41 +302,35 @@ def compute_source_estimate(
     averaged_data /= n_epochs
     envelope = np.abs(averaged_data)
 
-    # Use the cropped time array for tmin and adjust the data shape
     averaged_stc = mne.SourceEstimate(
         envelope,
         vertices=[vertices_lh, vertices_rh],
-        tmin=cropped_times[0],
+        tmin=epochs.times[0],
         tstep=epochs.times[1] - epochs.times[0],
         subject="fsaverage",
     )
 
-    # Create time-domain averaged version
     time_averaged_stc = average_stc_in_time(averaged_stc, window_size=0.1)
 
-    # Compute ROI time courses for both original and time-averaged data
     roi_time_courses = stc_to_matrix(averaged_stc, parcellation)
     time_averaged_roi_time_courses = stc_to_matrix(time_averaged_stc, parcellation)
 
-    # Save original ROI time courses
+    # Save outputs
     roi_fname = (
         f"{subject}_task-{condition}_{band_name}_lcmv_beamformer_roi_time_courses.npy"
     )
     np.save(os.path.join(output_dir, roi_fname), roi_time_courses)
 
-    # Save time-averaged ROI time courses
     time_avg_roi_fname = f"{subject}_task-{condition}_{band_name}_lcmv_beamformer_time_averaged_roi_time_courses.npy"
     np.save(
         os.path.join(output_dir, time_avg_roi_fname), time_averaged_roi_time_courses
     )
 
-    # Save original SourceEstimate
     averaged_fname = (
         f"{subject}_task-{condition}_{band_name}_lcmv_beamformer_averaged-stc"
     )
     averaged_stc.save(os.path.join(output_dir, averaged_fname), overwrite=True)
 
-    # Save time-averaged SourceEstimate
     time_avg_fname = (
         f"{subject}_task-{condition}_{band_name}_lcmv_beamformer_time_averaged-stc"
     )
@@ -419,7 +462,8 @@ def process_subject(subject, data_dir, output_dir):
     except Exception as e:
         print(f"Error processing {subject}: {str(e)}")
         import traceback
-        traceback.print_exc(
+
+        traceback.print_exc()
 
 
 def update_progress(subject, output_dir):
@@ -438,7 +482,9 @@ def get_processed_subjects(output_dir):
 
 def main():
     data_dir, output_dir = setup_directories()
-    subject_dirs = [d for d in os.listdir(data_dir) if d.startswith("sub-") and d[4:].isdigit()]
+    subject_dirs = [
+        d for d in os.listdir(data_dir) if d.startswith("sub-") and d[4:].isdigit()
+    ]
 
     processed_subjects = get_processed_subjects(output_dir)
 
