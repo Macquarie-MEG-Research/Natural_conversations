@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 # cropped data takes up a lot of space
 EQUALIZE_EVENT_COUNTS = False
 SAVE_CROPPED_DATA_H5 = False
-DIAGNOSTIC_PLOTS = False
 
 
 def setup_directories():
@@ -166,37 +165,6 @@ def prepare_epochs(all_epochs, noise_raw):
     print(f"Final combined_epochs: {len(combined_epochs)}")
     print(f"Time points: {len(combined_epochs.times)}")
     print(f"Combined epochs tmin: {combined_epochs.tmin}, tmax: {combined_epochs.tmax}")
-    if DIAGNOSTIC_PLOTS:
-        # Diagnostic plots
-        plt.figure(figsize=(15, 10))
-
-        plt.subplot(311)
-        plt.plot(combined_epochs.times, combined_epochs.get_data().mean(axis=(0, 1)))
-        plt.title("Average of all channels and epochs")
-        plt.xlabel("Time (s)")
-
-        plt.subplot(312)
-        plt.plot(combined_epochs.times, combined_epochs.get_data()[0, 0, :])
-        plt.title("First channel of first epoch")
-        plt.xlabel("Time (s)")
-
-        plt.subplot(313)
-        plt.imshow(
-            combined_epochs.get_data().mean(axis=0),
-            aspect="auto",
-            extent=[
-                combined_epochs.times[0],
-                combined_epochs.times[-1],
-                0,
-                combined_epochs.get_data().shape[1],
-            ],
-        )
-        plt.title("Heatmap of all channels (averaged across epochs)")
-        plt.xlabel("Time (s)")
-        plt.ylabel("Channels")
-
-        plt.tight_layout()
-        plt.show()
 
     if EQUALIZE_EVENT_COUNTS:
         combined_epochs.equalize_event_counts()
