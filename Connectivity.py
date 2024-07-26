@@ -89,10 +89,10 @@ def main():     # TODO: put in the elif statements
 
     # Saving
     if saving:
-        np.save(output_dir + 'All_Strength_' + array_type, Strength)
-        np.save(output_dir + 'All_Betweenness_' + array_type, Betweenness)
-        np.save(output_dir + 'All_Eigenvector_' + array_type, Eigenvector)
-        np.save(output_dir + 'All_Clustering_' + array_type, Clustering)
+        np.save(output_dir + '_All_Strength_' + array_type, Strength)
+        np.save(output_dir + '_All_Betweenness_' + array_type, Betweenness)
+        np.save(output_dir + '_All_Eigenvector_' + array_type, Eigenvector)
+        np.save(output_dir + '_All_Clustering_' + array_type, Clustering)
 
 
 if __name__ == "__main__":
