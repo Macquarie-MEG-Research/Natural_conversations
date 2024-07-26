@@ -2,12 +2,13 @@
 # each assumed to be in the shape (channels/ROI's, time points)
 
 import numpy as np
-from datetime import datetime
+import time
 import os
 import dyconnmap
 import bct
 from scipy import stats
 import pathlib
+start = time.time()
 
 def operations_to_perform():    # Change as desired
     Cal_wpli = True
@@ -16,7 +17,7 @@ def operations_to_perform():    # Change as desired
 
 
 def setup_dependencies():    # Change as desired
-    input_dir = r'C:\Users\em17531\Desktop\New_project\source_loc_output'     # The directory containing files of interest
+    input_dir = r''     # The directory containing files of interest
     output_dir = r''    # The output directory
     array_type = 'participant_conversation_alpha'     # This is the type of array that will be loaded for further calculations, eg. "participant_conversation_alpha"
     target_fb = [8,12]  # The target frequency band     TODO: set this up so variable can be a this can be list of bands and each generates it's own adjacency matrix
@@ -48,7 +49,7 @@ def graph_metrics(adj_matrix):  # TODO: Add in stats, maybe nbs? Could use fdc a
     Strength = []
     for participant in adj_matrix:
         Strength.append(bct.strengths_und(np.nan_to_num(participant)))
-        Strength = np.array(Strength)
+    Strength = np.array(Strength)
 
     # Zeroing negative phasing
     Strength[Strength < 0] = 0
@@ -57,19 +58,19 @@ def graph_metrics(adj_matrix):  # TODO: Add in stats, maybe nbs? Could use fdc a
     Betweenness = []
     for participant in adj_matrix:
         Betweenness.append(bct.betweenness_wei(np.nan_to_num(participant)))
-        Betweenness = np.array(Betweenness)
+    Betweenness = np.array(Betweenness)
 
     # Eigenvector centrality calculator
     Eigenvector = []
     for participant in adj_matrix:
         Eigenvector.append(bct.eigenvector_centrality_und(np.nan_to_num(participant)))
-        Eigenvector = np.array(Eigenvector)
+    Eigenvector = np.array(Eigenvector)
 
     # Clustering calculator
     Clustering = []
     for participant in adj_matrix:
         Clustering.append(bct.clustering_coef_wu(np.nan_to_num(participant)))
-        Clustering = np.array(Clustering)
+    Clustering = np.array(Clustering)
 
     return Strength, Betweenness, Eigenvector, Clustering
 
@@ -96,3 +97,5 @@ def main():     # TODO: put in the elif statements
 
 if __name__ == "__main__":
     main()
+
+print('\n' + "EXECUTION TIME: " + str(time.time()-start))
