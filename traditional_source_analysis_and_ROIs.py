@@ -18,7 +18,7 @@ import config  # our config.py file
 
 # specify source method etc
 source_method = "dSPM" #"MNE"
-src_type = 'vol' # 'vol' or 'surface'
+src_type = 'surface' # 'vol' or 'surface'
 spacing = "oct6" # for 'surface' source space only
 if src_type != 'surface':
     spacing = ''
@@ -37,6 +37,13 @@ if ch_type:
     path_suffix = f"_{ch_type}-only"
 else:
     path_suffix = ""
+
+if src_type == 'vol':
+    src_suffix = '-vl.stc'
+    #if this_run == "ba+da__ba-da":
+    #    src_suffix = '-vol.stc' # to read a previous version of saved results
+elif src_type == 'surface':
+    src_suffix = '-lh.stc'
 
 
 subjects = config.subjects
@@ -92,6 +99,8 @@ for sub in use_subjects:
 
     stc_filename_prefix = op.join(source_results_dir, f'sub-{sub}_task-conversation_proc')
 
+    if Path(stc_filename_prefix + '_ba' + src_suffix).exists():
+        continue
 
     # Read data
     epochs = mne.read_epochs(epochs_fname)
@@ -144,6 +153,10 @@ for sub in use_subjects:
     #evoked_allconds = epochs.average()
     #evoked_allconds.plot_joint() # average ERF across all conds
 
+    epochs.equalize_event_counts(['ba', 'da'])
+    epochs.equalize_event_counts(['interviewer_conversation', 'interviewer_repetition'])
+    epochs.equalize_event_counts(['participant_conversation', 'participant_repetition'])
+    
     # compute evoked for each cond (ba, da, conversation, repetition)
     evokeds = []
     for cond in epochs.event_id:
@@ -216,13 +229,6 @@ conds = ['ba','da','interviewer_conversation','interviewer_repetition','particip
 if this_run == "ba+da__ba-da":
     conds = ['ba+da', 'ba-da']
 
-if src_type == 'vol':
-    src_suffix = '-vl.stc'
-    #if this_run == "ba+da__ba-da":
-    #    src_suffix = '-vol.stc' # to read a previous version of saved results
-elif src_type == 'surface':
-    src_suffix = '-lh.stc'
-
 # overwrite the paths here to use a previous version of results for participant-locked epochs
 #source_results_dir = "/mnt/d/Work/analysis_ME206/results/bids/source/MNE_surface_4proj"
 #figures_dir = "/mnt/d/Work/analysis_ME206/results/bids/source/MNE_surface_4proj/Figures_ROI"
@@ -244,7 +250,7 @@ for cond in conds:
     # divide by number of files
     stc /= len(stc_files)
     '''
-
+    
     # the above only seems to work for surface-based stcs,
     # so we are retaining the code below for now to handle vol-based stcs
 
@@ -307,7 +313,7 @@ for cond in conds:
 # Extract ROI time courses from source estimates
 
 window_size = 200  # sliding window size (ms) for calculating z-scores
-window = window_size / 5  # 10 = 50ms, 20 = 100ms, 40 = 200ms
+window = int(window_size / 5)  # e.g. 10 = 50ms, 20 = 100ms, 40 = 200ms
             
 (figures_ROI_dir / "all_ROIs").mkdir(parents=True, exist_ok=True)
 (figures_ROI_zscores_dir / f"all_ROIs_{window_size}ms").mkdir(parents=True, exist_ok=True)
@@ -323,6 +329,22 @@ if src_type == 'vol':
             'ctx_lh_G_temp_sup-Lateral','ctx_rh_G_temp_sup-Lateral','ctx_lh_Pole_temporal','ctx_rh_Pole_temporal',
             'ctx_lh_S_temporal_sup','ctx_rh_S_temporal_sup']  # can have multiple labels in this list
     #roi_idx = label_names.index(rois[0])
+
+    # use the HCP-MMP parcellation
+    # create the volumetric atlas first:
+    # https://gist.github.com/larsoner/8e664205cd8285ca7c46211403ad12ce
+    '''
+    # for some reason the label names are still not found,
+    # even though they come from the correct lut
+    fname_aseg = subjects_dir / subject / 'mri' / 'HCPMMP1_combined+aseg.mgz' # HCPMMP1 = cortical; aseg = subcortical
+    fname_lut = subjects_dir / subject / 'mri' / 'HCPMMP1_combinedColorLUT.txt'
+    lut = mne.read_freesurfer_lut(fname_lut)
+    label_names = mne.get_volume_labels_from_aseg(fname_aseg, atlas_ids=lut[0])
+    rois = ['Anterior_Cingulate_and_Medial_Prefrontal_Cortex-lh', 'Anterior_Cingulate_and_Medial_Prefrontal_Cortex-rh',
+            'DorsoLateral_Prefrontal_Cortex-lh', 'DorsoLateral_Prefrontal_Cortex-rh',
+            'Posterior_Cingulate_Cortex-lh', 'Posterior_Cingulate_Cortex-rh',
+            'Temporo-Parieto-Occipital_Junction-lh', 'Temporo-Parieto-Occipital_Junction-rh']
+    '''        
 
     for label_name in rois:
         (figures_ROI_dir / label_name).mkdir(parents=True, exist_ok=True)
@@ -372,6 +394,7 @@ if src_type == 'vol':
         # Plot individual-subjects ROI time series
         for sub in use_subjects:
             fig, axes = plt.subplots(1, layout="constrained")
+            fig_z, axes_z = plt.subplots(1, layout="constrained")
             for cond in conds_ROI:
                 stc_file = op.join(source_results_dir, f'sub-{sub}_task-conversation_proc_{cond}{src_suffix}')    
                 stc = mne.read_source_estimate(stc_file)
@@ -380,11 +403,21 @@ if src_type == 'vol':
                 )
                 axes.plot(1e3 * stc.times, label_ts[0][0], label=cond)
 
+                # calculate z-score at each time point
+                #mu = np.mean(label_ts[0][0])
+                #sigma = np.std(label_ts[0][0])
+                #zscores = (label_ts - mu) / sigma
+                #axes_z.plot(1e3 * stc.times, zscores[0][0], label=cond)
+
             axes.axvline(linestyle='-', color='k') # add verticle line at time 0
             axes.set(xlabel="Time (ms)", ylabel="Activation")
             axes.legend()
+            #axes_z.axvline(linestyle='-', color='k') # add verticle line at time 0
+            #axes_z.set(xlabel="Time (ms)", ylabel="Activation (z-score)")
+            #axes_z.legend()
 
             fig.savefig(figures_ROI_dir / label_name / f"sub-{sub}.png")
+            #fig_z.savefig(figures_ROI_zscores_dir / label_name / f"sub-{sub}.png")
             plt.close('all')
 
 elif src_type == 'surface':
@@ -408,6 +441,26 @@ elif src_type == 'surface':
     # or read a single label (e.g. V1, BA44, etc)
     #labels_parc = mne.read_label(op.join(subjects_dir, subject, 'label', 'lh.V1.label'))
 
+    
+    # use the HCP-MMP parcellation
+    # https://balsa.wustl.edu/WN56
+    #mne.datasets.fetch_hcp_mmp_parcellation(subjects_dir=subjects_dir)
+    # can use the fine-grained (~360 labels) "HCPMMP1" or coarse (~44 labels) "HCPMMP1_combined" atlas
+    labels_parc = mne.read_labels_from_annot(
+        'fsaverage', 'HCPMMP1_combined', subjects_dir=subjects_dir)
+    labels = [labels_parc[2], labels_parc[3], labels_parc[8], labels_parc[9],
+              labels_parc[30], labels_parc[31], labels_parc[42], labels_parc[43]]
+    #figures_ROI_dir = figures_ROI_dir.parent / (figures_ROI_dir.name + "_HCPMMP")
+    '''
+    # to check the locations of ROIs
+    brain = mne.viz.Brain('fsaverage', 'lh', 'inflated', subjects_dir=subjects_dir,
+                cortex='low_contrast', background='white', size=(800, 600))
+    #brain.add_annotation('HCPMMP1') # this adds "border lines" showing the parcellation
+    #aud_label = [label for label in labels if label.name == 'L_A1_ROI-lh'][0]
+    #brain.add_label(aud_label, borders=False) # this "colours in" the region
+    for label in labels:
+        brain.add_label(label)
+    '''
 
     for label in labels:
         label_name = label.name 
@@ -421,19 +474,35 @@ elif src_type == 'surface':
 
         # Plot GA ROI time series
         fig, axes = plt.subplots(1, layout="constrained")
+        fig_z, axes_z = plt.subplots(1, layout="constrained")
         for cond in conds_ROI:
             label_ts = mne.extract_label_time_course(
                 [GA_stcs[cond]], label, src, mode="auto"
             )
-            axes.plot(1e3 * GA_stcs[cond].times, label_ts[0][0, :], label=cond)
+            label_ts = label_ts[0][0]
+            axes.plot(1e3 * GA_stcs[cond].times, label_ts, label=cond)
+
+            # calculate z-score at each time point (using a sliding time window)
+            mu = np.mean(label_ts) # demean is based on the whole epoch
+            label_ts = label_ts - mu
+            
+            zscores = [0] * (len(label_ts) - window) # initialise the z-scores array
+            for t in range(0, len(label_ts) - window):
+                sigma = np.std(label_ts[t:t+window], mean=0) # sigma is calculated on the time slice only, but need to manually set the mean to 0
+                zscores[t] = label_ts[t] / sigma
+            axes_z.plot(1e3 * GA_stcs[cond].times[:len(zscores)], zscores, label=cond)
 
         axes.axvline(linestyle='-', color='k') # add verticle line at time 0
         axes.set(xlabel="Time (ms)", ylabel="Activation")
         axes.legend()
+        axes_z.axvline(linestyle='-', color='k') # add verticle line at time 0
+        axes_z.set(xlabel="Time (ms)", ylabel="Activation (z-score)")
+        axes_z.legend()
 
         fig.savefig(figures_ROI_dir / label_name / "GA.png")
         fig.savefig(figures_ROI_dir / "all_ROIs" / f"{label_name}_GA.png") # to save an additional copy of all GA plots into one folder
-        plt.close(fig)
+        fig_z.savefig(figures_ROI_zscores_dir / f"all_ROIs_{window_size}ms" / f"{label_name}_GA.png") 
+        plt.close('all')
         
         # Plot individual-subjects ROI time series
         for sub in use_subjects:
