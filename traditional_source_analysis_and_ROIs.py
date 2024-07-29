@@ -2,7 +2,6 @@
 # Compute and plot GAs
 # Extract time courses from predefined ROIs
 
-import os
 import os.path as op
 import numpy as np
 import matplotlib.pyplot as plt
@@ -26,13 +25,19 @@ if src_type != 'surface':
 
 # specify how many SSP projectors to use for speech artifact removal
 n_proj = 4  # 1 means: 1 for MEG & 1 for EEG
+this_run = f"{n_proj}-proj"
+#this_run = "ba+da__ba-da" # for the "ba+da" and "ba-da" sanity checks
 
 # which conditions to compare in ROI analysis
 comparison = "participant" # "interviewer" or "participant"
 conds_ROI = [f"{comparison}_conversation", f"{comparison}_repetition"]
 
-this_run = f"{n_proj}-proj"
-#this_run = "ba+da__ba-da" # for the "ba+da" and "ba-da" sanity checks
+ch_type = None  # "meg" or "eeg"  # None means all
+if ch_type:
+    path_suffix = f"_{ch_type}-only"
+else:
+    path_suffix = ""
+
 
 subjects = config.subjects
 if subjects == "all":
@@ -52,12 +57,15 @@ if platform.system() == 'Windows':
 #analysis_path = Path("/mnt/d/Work/analysis_ME206/Natural_Conversations_study/analysis")
 
 deriv_path = analysis_path / "natural-conversations-bids" / "derivatives"
-source_results_dir = analysis_path / "results" / f"source-{source_method}-{src_type}" / this_run
-figures_dir = analysis_path / "figures" / f"source-{source_method}-{src_type}" / this_run
-figures_ROI_dir = analysis_path / "figures" / f"source-{source_method}-{src_type}" / this_run / f"{comparison}_ROI"
+source_results_dir = analysis_path / "results" / f"source-{source_method}-{src_type}{path_suffix}" / this_run
+figures_dir = analysis_path / "figures" / f"source-{source_method}-{src_type}{path_suffix}" / this_run
+figures_ROI_dir = figures_dir / f"{comparison}_ROI"
+#figures_ROI_zscores_dir = figures_dir / f"{comparison}_ROI_zscores"
+figures_ROI_zscores_dir = figures_dir / f"{comparison}_ROI_zscores-timeslices"
 # create the folders if needed
 source_results_dir.mkdir(parents=True, exist_ok=True)
 figures_ROI_dir.mkdir(parents=True, exist_ok=True)
+figures_ROI_zscores_dir.mkdir(parents=True, exist_ok=True)
 
 subjects_dir = deriv_path / "freesurfer" / "subjects"
 subject = 'fsaverage'
@@ -99,13 +107,15 @@ for sub in use_subjects:
         epochs.add_proj(proj).apply_proj()
     
     epochs = epochs.pick(["meg", "eeg"], exclude="bads")
+    if ch_type:
+        epochs.pick(ch_type)
 
     ranks = mne.compute_rank(inst=epochs, tol=1e-3, tol_kind="relative")
     rank = sum(ranks.values())
     print(f"  Ranks={ranks} (total={rank})")
 
     # TEMP - always recreate inv for now, until we change to free orientation in the pipeline
-    if 1: #n_proj or src_type == 'vol':
+    if 1: #n_proj or ch_type or src_type == 'vol':
         # Recreate inverse taking into account additional projections
         cov = mne.read_cov(cov_fname)
         if src_type == 'vol':
@@ -227,13 +237,27 @@ for cond in conds:
 
     # initialise the sum array to correct size using first subject's stc
     stc = mne.read_source_estimate(stc_files[0])
-
+    '''
     # read in the stc for each subsequent subject, add to the sum array
     for fname in stc_files[1:]:
         stc += mne.read_source_estimate(fname)
-
     # divide by number of files
     stc /= len(stc_files)
+    '''
+
+    # the above only seems to work for surface-based stcs,
+    # so we are retaining the code below for now to handle vol-based stcs
+
+    stcs_sum = stc.data # this contains lh & rh vertices combined together
+    # there are also separate fields for the 2 hemis (stc.lh_data, stc.rh_data),
+    # but their content cannot be set directly, so just use the combined one
+
+    # read in the stc for each subsequent subject, add to the sum array
+    for fname in stc_files[1:]:
+        stc = mne.read_source_estimate(fname)
+        stcs_sum = stcs_sum + stc.data
+    # divide by number of files
+    stc.data = stcs_sum / len(stc_files)
 
     # store in the GA struct
     GA_stcs[cond] = stc
@@ -282,8 +306,13 @@ for cond in conds:
 
 # Extract ROI time courses from source estimates
 
-src = mne.read_source_spaces(src_fname)
+window_size = 200  # sliding window size (ms) for calculating z-scores
+window = window_size / 5  # 10 = 50ms, 20 = 100ms, 40 = 200ms
+            
 (figures_ROI_dir / "all_ROIs").mkdir(parents=True, exist_ok=True)
+(figures_ROI_zscores_dir / f"all_ROIs_{window_size}ms").mkdir(parents=True, exist_ok=True)
+
+src = mne.read_source_spaces(src_fname)
 
 if src_type == 'vol':
     # choose atlas for parcellation
@@ -297,22 +326,48 @@ if src_type == 'vol':
 
     for label_name in rois:
         (figures_ROI_dir / label_name).mkdir(parents=True, exist_ok=True)
+        (figures_ROI_zscores_dir / label_name).mkdir(parents=True, exist_ok=True)
 
         # Plot GA ROI time series
         fig, axes = plt.subplots(1, layout="constrained")
+        fig_z, axes_z = plt.subplots(1, layout="constrained")
         for cond in conds_ROI:
             label_ts = mne.extract_label_time_course(
                 [GA_stcs[cond]], (fname_aseg, label_name), src, mode="auto"
             )
-            axes.plot(1e3 * GA_stcs[cond].times, label_ts[0][0, :], label=cond)
+            label_ts = label_ts[0][0]
+            axes.plot(1e3 * GA_stcs[cond].times, label_ts, label=cond)
 
-        axes.axvline(linestyle='--') # add verticle line at time 0
+            # calculate z-score at each time point (using a sliding time window)
+            mu = np.mean(label_ts) # demean is based on the whole epoch
+            label_ts = label_ts - mu
+            
+            zscores = [0] * (len(label_ts) - window) # initialise the z-scores array
+            for t in range(0, len(label_ts) - window):
+                sigma = np.std(label_ts[t:t+window], mean=0) # sigma is calculated on the time slice only, but need to manually set the mean to 0
+                zscores[t] = label_ts[t] / sigma
+            axes_z.plot(1e3 * GA_stcs[cond].times[:len(zscores)], zscores, label=cond)
+            '''
+            # take the time window centred on current time point (rather than on the RHS)
+            window_half = int(window/2)
+            zscores = [0] * (len(label_ts) - window_half) # initialise the z-scores array
+            for t in range(window_half, len(label_ts) - window_half):
+                sigma = np.std(label_ts[t-window_half:t+window_half], mean=0) # sigma is calculated on the time slice only, but need to manually set the mean to 0
+                zscores[t] = label_ts[t] / sigma
+            axes_z.plot(1e3 * GA_stcs[cond].times[window_half:len(zscores)], zscores[window_half:], label=cond)
+            '''
+
+        axes.axvline(linestyle='-', color='k') # add verticle line at time 0
         axes.set(xlabel="Time (ms)", ylabel="Activation")
         axes.legend()
+        axes_z.axvline(linestyle='-', color='k') # add verticle line at time 0
+        axes_z.set(xlabel="Time (ms)", ylabel="Activation (z-score)")
+        axes_z.legend()
 
         fig.savefig(figures_ROI_dir / label_name / "GA.png")
         fig.savefig(figures_ROI_dir / "all_ROIs" / f"{label_name}_GA.png") # to save an additional copy of all GA plots into one folder
-        plt.close(fig)
+        fig_z.savefig(figures_ROI_zscores_dir / f"all_ROIs_{window_size}ms" / f"{label_name}_GA.png") 
+        plt.close('all')
 
         # Plot individual-subjects ROI time series
         for sub in use_subjects:
@@ -323,14 +378,14 @@ if src_type == 'vol':
                 label_ts = mne.extract_label_time_course(
                     [stc], (fname_aseg, label_name), src, mode="auto"
                 )
-                axes.plot(1e3 * stc.times, label_ts[0][0, :], label=cond)
+                axes.plot(1e3 * stc.times, label_ts[0][0], label=cond)
 
-            axes.axvline(linestyle='--') # add verticle line at time 0
+            axes.axvline(linestyle='-', color='k') # add verticle line at time 0
             axes.set(xlabel="Time (ms)", ylabel="Activation")
             axes.legend()
 
             fig.savefig(figures_ROI_dir / label_name / f"sub-{sub}.png")
-            plt.close(fig)
+            plt.close('all')
 
 elif src_type == 'surface':
     # for surface source space, we need to create the Label object first
@@ -352,7 +407,8 @@ elif src_type == 'surface':
 
     # or read a single label (e.g. V1, BA44, etc)
     #labels_parc = mne.read_label(op.join(subjects_dir, subject, 'label', 'lh.V1.label'))
-    
+
+
     for label in labels:
         label_name = label.name 
         # or set a custom name for combined labels
@@ -371,7 +427,7 @@ elif src_type == 'surface':
             )
             axes.plot(1e3 * GA_stcs[cond].times, label_ts[0][0, :], label=cond)
 
-        axes.axvline(linestyle='--') # add verticle line at time 0
+        axes.axvline(linestyle='-', color='k') # add verticle line at time 0
         axes.set(xlabel="Time (ms)", ylabel="Activation")
         axes.legend()
 
@@ -390,7 +446,7 @@ elif src_type == 'surface':
                 )
                 axes.plot(1e3 * stc.times, label_ts[0][0, :], label=cond)
 
-            axes.axvline(linestyle='--') # add verticle line at time 0
+            axes.axvline(linestyle='-', color='k') # add verticle line at time 0
             axes.set(xlabel="Time (ms)", ylabel="Activation")
             axes.legend()
 
