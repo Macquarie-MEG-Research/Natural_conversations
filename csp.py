@@ -93,10 +93,12 @@ if platform.system() == 'Windows':
     analysis_path = Path("D:/Work/analysis_ME206/Natural_Conversations_study/analysis")
 
 deriv_path = analysis_path / "natural-conversations-bids" / "derivatives"
-fig_path = analysis_path / "figures" / "CSP-decoding"
 if src_type == 'vol':
     fig_path = analysis_path / "figures" / "CSP-decoding-vol"
     results_path = analysis_path / "results" / "CSP-decoding-vol"
+else:
+    fig_path = analysis_path / "figures" / "CSP-decoding"
+    results_path = analysis_path / "results" / "CSP-decoding"
 cop_path = analysis_path / "figures"
 subjects_dir = deriv_path / "freesurfer" / "subjects"
 if src_type == 'vol':
@@ -141,7 +143,7 @@ if n_proj or n_exclude or ch_type or not whiten or src_type != "surf" or randomi
     if decode != "participant":
         extra += f"-{decode}"
         title += f", {decode}"
-for si, sub in enumerate(use_subjects):  # just 03 for now
+for si, sub in enumerate(use_subjects):
     path = deriv_path / 'mne-bids-pipeline' / f'sub-{sub}' / 'meg'
     epochs_fname = path / f'sub-{sub}_task-conversation_proc-clean_epo.fif'
     trans_fname = path / f'sub-{sub}_task-conversation_trans.fif'
@@ -396,6 +398,7 @@ if plot_classification or plot_indiv:
             if subj_key == "":                
                 results_path.mkdir(exist_ok=True)
                 stc.save(f'{results_path}/decoding{extra}_csp_GA') 
+
             src = mne.read_source_spaces(src_fname)
             # for vol src, the plot function returns a matplotlib Figure -
             # we can't update the clim & time point for this once plotted, so do the actual plotting later
@@ -404,6 +407,11 @@ if plot_classification or plot_indiv:
                 this_data.reshape(-1, n_vertices).T,
                 vertices=fs_vertices, tmin=0, tstep=1., subject="fsaverage",
             )
+            # save the GA stc
+            if subj_key == "":                
+                results_path.mkdir(exist_ok=True)
+                stc.save(f'{results_path}/decoding{extra}_csp_GA') 
+
             brain = stc.plot(
                 initial_time=0., transparent=True,
                 colormap="viridis", clim=dict(kind="value", lims=[0, 1, 2]),
