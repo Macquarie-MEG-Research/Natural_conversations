@@ -27,13 +27,15 @@ def setup_dependencies():    # Change as desired
     return input_dir, output_dir, array_type, fs, target_fb, saving
 
 
-def prep_data(input_dir, array_type):
+def prep_data(input_dir, array_type, target_fb, fs):
     data = []
     folder = pathlib.Path(input_dir).glob('*')
     for file in folder:
         if (os.path.basename(file)).endswith('.npy'):
             if array_type in os.path.basename(file):
-                data.append(np.load(file))
+                array = np.load(file)
+                _, _, filtered_array = dyconnmap.analytic_signal(array, fb=target_fb, fs=fs)
+                data.append(filtered_array)
     return np.array(data)
 
 
@@ -79,7 +81,7 @@ def main():     # TODO: put in the elif statements
     # Prep
     Cal_wpli, Cal_graph_metrics = operations_to_perform()
     input_dir, output_dir, array_type, fs, target_fb, saving = setup_dependencies()
-    data = prep_data(input_dir, array_type)
+    data = prep_data(input_dir, array_type, target_fb, fs)
 
     # Core functions
     if Cal_wpli:
@@ -93,6 +95,7 @@ def main():     # TODO: put in the elif statements
         np.save(output_dir + '_All_Betweenness_' + array_type, Betweenness)
         np.save(output_dir + '_All_Eigenvector_' + array_type, Eigenvector)
         np.save(output_dir + '_All_Clustering_' + array_type, Clustering)
+        np.save(output_dir + '_Master_adj_matrix_' + array_type, adj_matrix)
 
 
 if __name__ == "__main__":
