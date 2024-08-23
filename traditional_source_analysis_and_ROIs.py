@@ -321,7 +321,9 @@ window = int(window_size / 5)  # e.g. 10 = 50ms, 20 = 100ms, 40 = 200ms
 src = mne.read_source_spaces(src_fname)
 
 if src_type == 'vol':
-    # choose atlas for parcellation
+    # choose atlas
+
+    # can use aparc 2009 parcellation
     fname_aseg = subjects_dir / subject / 'mri' / 'aparc.a2009s+aseg.mgz' # aparc = cortical; aseg = subcortical
     label_names = mne.get_volume_labels_from_aseg(fname_aseg)
     rois = ['ctx_lh_G_cingul-Post-dorsal','ctx_lh_G_cingul-Post-ventral','ctx_rh_G_cingul-Post-dorsal','ctx_rh_G_cingul-Post-ventral',
@@ -330,32 +332,37 @@ if src_type == 'vol':
             'ctx_lh_S_temporal_sup','ctx_rh_S_temporal_sup']  # can have multiple labels in this list
     #roi_idx = label_names.index(rois[0])
 
-    # use the HCP-MMP parcellation
-    # create the volumetric atlas first:
+    # or use the HCP-MMP parcellation
+    # Note: need to create the volumetric atlas & custom lookup table (LUT) for this first - see link below:
     # https://gist.github.com/larsoner/8e664205cd8285ca7c46211403ad12ce
-    '''
-    # for some reason the label names are still not found,
-    # even though they come from the correct lut
     fname_aseg = subjects_dir / subject / 'mri' / 'HCPMMP1_combined+aseg.mgz' # HCPMMP1 = cortical; aseg = subcortical
     fname_lut = subjects_dir / subject / 'mri' / 'HCPMMP1_combinedColorLUT.txt'
     lut = mne.read_freesurfer_lut(fname_lut)
     label_names = mne.get_volume_labels_from_aseg(fname_aseg, atlas_ids=lut[0])
-    rois = ['Anterior_Cingulate_and_Medial_Prefrontal_Cortex-lh', 'Anterior_Cingulate_and_Medial_Prefrontal_Cortex-rh',
-            'DorsoLateral_Prefrontal_Cortex-lh', 'DorsoLateral_Prefrontal_Cortex-rh',
-            'Posterior_Cingulate_Cortex-lh', 'Posterior_Cingulate_Cortex-rh',
-            'Temporo-Parieto-Occipital_Junction-lh', 'Temporo-Parieto-Occipital_Junction-rh']
-    '''        
+    # need to supply a list of dicts here (rather than strings), as we are using a custom LUT
+    rois = [{'Anterior_Cingulate_and_Medial_Prefrontal_Cortex-lh': 1001},
+            {'Anterior_Cingulate_and_Medial_Prefrontal_Cortex-rh': 2001},
+            {'DorsoLateral_Prefrontal_Cortex-lh': 1004}, 
+            {'DorsoLateral_Prefrontal_Cortex-rh': 2004},
+            {'Posterior_Cingulate_Cortex-lh': 1015}, 
+            {'Posterior_Cingulate_Cortex-rh': 2015},
+            {'Temporo-Parieto-Occipital_Junction-lh': 1021}, 
+            {'Temporo-Parieto-Occipital_Junction-rh': 2021}]       
 
-    for label_name in rois:
-        (figures_ROI_dir / label_name).mkdir(parents=True, exist_ok=True)
-        (figures_ROI_zscores_dir / label_name).mkdir(parents=True, exist_ok=True)
+    for label in rois:
+        # check if label is a dict, if so then we extract the label_name here
+        if isinstance(label, dict):
+            label_name = list(label.keys())[0]
+        
+        #(figures_ROI_dir / label_name).mkdir(parents=True, exist_ok=True)
+        #(figures_ROI_zscores_dir / label_name).mkdir(parents=True, exist_ok=True)
 
         # Plot GA ROI time series
         fig, axes = plt.subplots(1, layout="constrained")
         fig_z, axes_z = plt.subplots(1, layout="constrained")
         for cond in conds_ROI:
             label_ts = mne.extract_label_time_course(
-                [GA_stcs[cond]], (fname_aseg, label_name), src, mode="auto"
+                [GA_stcs[cond]], (fname_aseg, label), src, mode="auto"
             )
             label_ts = label_ts[0][0]
             axes.plot(1e3 * GA_stcs[cond].times, label_ts, label=cond)
@@ -386,7 +393,7 @@ if src_type == 'vol':
         axes_z.set(xlabel="Time (ms)", ylabel="Activation (z-score)")
         axes_z.legend()
 
-        fig.savefig(figures_ROI_dir / label_name / "GA.png")
+        #fig.savefig(figures_ROI_dir / label_name / "GA.png")
         fig.savefig(figures_ROI_dir / "all_ROIs" / f"{label_name}_GA.png") # to save an additional copy of all GA plots into one folder
         fig_z.savefig(figures_ROI_zscores_dir / f"all_ROIs_{window_size}ms" / f"{label_name}_GA.png") 
         plt.close('all')
@@ -437,12 +444,14 @@ elif src_type == 'surface':
         labels_parc[18]+labels_parc[20], labels_parc[19]+labels_parc[21], labels_parc[50], labels_parc[51], 
         labels_parc[58], labels_parc[59], labels_parc[66], labels_parc[67], labels_parc[84], labels_parc[85], labels_parc[144], labels_parc[145]
     ]
+    # can check if a particular label is available in the atlas
+    #print([label for label in labels_parc if "fusiform" in label.name])
 
     # or read a single label (e.g. V1, BA44, etc)
     #labels_parc = mne.read_label(op.join(subjects_dir, subject, 'label', 'lh.V1.label'))
 
     
-    # use the HCP-MMP parcellation
+    # or use the HCP-MMP parcellation
     # https://balsa.wustl.edu/WN56
     #mne.datasets.fetch_hcp_mmp_parcellation(subjects_dir=subjects_dir)
     # can use the fine-grained (~360 labels) "HCPMMP1" or coarse (~44 labels) "HCPMMP1_combined" atlas
@@ -470,7 +479,7 @@ elif src_type == 'surface':
         if label_name == 'G_cingul-Post-dorsal-rh + G_cingul-Post-ventral-rh':
             label_name = 'G_cingul-Post-rh'
 
-        (figures_ROI_dir / label_name).mkdir(parents=True, exist_ok=True)
+        #(figures_ROI_dir / label_name).mkdir(parents=True, exist_ok=True)
 
         # Plot GA ROI time series
         fig, axes = plt.subplots(1, layout="constrained")
@@ -499,7 +508,7 @@ elif src_type == 'surface':
         axes_z.set(xlabel="Time (ms)", ylabel="Activation (z-score)")
         axes_z.legend()
 
-        fig.savefig(figures_ROI_dir / label_name / "GA.png")
+        #fig.savefig(figures_ROI_dir / label_name / "GA.png")
         fig.savefig(figures_ROI_dir / "all_ROIs" / f"{label_name}_GA.png") # to save an additional copy of all GA plots into one folder
         fig_z.savefig(figures_ROI_zscores_dir / f"all_ROIs_{window_size}ms" / f"{label_name}_GA.png") 
         plt.close('all')
