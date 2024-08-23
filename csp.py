@@ -51,6 +51,7 @@ mne.viz.set_3d_options(
 )
 
 csp_freqs = config.decoding_csp_freqs
+csp_freqs['broadband'] = [4, 45] # add broadband decoding
 n_components = 4
 random_state = 42
 n_splits = 5
@@ -60,13 +61,13 @@ ch_type = None  # "eeg"  # None means all
 whiten = True  # default is True
 rerun = False  # force re-run / overwrite of existing files
 src_type = 'surf' # surf or vol
-mode = 'glass_brain' # stat_map or glass_brain, vol source space plotting mode
+mode = 'stat_map' # stat_map or glass_brain, vol source space plotting mode
 randomize = False  # False or nonzero int, randomize the trial labels
-decode = "participant"  # "participant" or "interviewer" turns, or "bada"
+decode = "interviewer"  # "participant" or "interviewer" turns, or "bada"
 
 assert src_type in ("vol", "surf"), src_type
 assert decode in ("participant", "interviewer", "bada"), decode
-mode_extra = f"_{mode[0:5]}" if src_type == "vol" else ""
+mode_extra = f"_{mode[0:5]}" if src_type == "vol" and mode == "glass_brain" else ""
 
 plot_classification = True
 plot_indiv = False
@@ -89,12 +90,15 @@ data_path = deriv_path = Path(__file__).parents[1] / "Natural_Conversations_stud
 analysis_path = deriv_path = Path(__file__).parents[1] / "Natural_Conversations_study" / "analysis"
 if platform.system() == 'Windows':
     data_path = Path("D:/Work/analysis_ME206/data")
-    analysis_path = Path("E:/M3/Natural_Conversations_study/analysis")
+    analysis_path = Path("D:/Work/analysis_ME206/Natural_Conversations_study/analysis")
 
 deriv_path = analysis_path / "natural-conversations-bids" / "derivatives"
-fig_path = analysis_path / "figures" / "CSP-decoding"
 if src_type == 'vol':
     fig_path = analysis_path / "figures" / "CSP-decoding-vol"
+    results_path = analysis_path / "results" / "CSP-decoding-vol"
+else:
+    fig_path = analysis_path / "figures" / "CSP-decoding"
+    results_path = analysis_path / "results" / "CSP-decoding"
 cop_path = analysis_path / "figures"
 subjects_dir = deriv_path / "freesurfer" / "subjects"
 if src_type == 'vol':
@@ -139,7 +143,7 @@ if n_proj or n_exclude or ch_type or not whiten or src_type != "surf" or randomi
     if decode != "participant":
         extra += f"-{decode}"
         title += f", {decode}"
-for si, sub in enumerate(use_subjects):  # just 03 for now
+for si, sub in enumerate(use_subjects):
     path = deriv_path / 'mne-bids-pipeline' / f'sub-{sub}' / 'meg'
     epochs_fname = path / f'sub-{sub}_task-conversation_proc-clean_epo.fif'
     trans_fname = path / f'sub-{sub}_task-conversation_trans.fif'
@@ -390,6 +394,11 @@ if plot_classification or plot_indiv:
                 this_data.reshape(-1, n_vertices).T,
                 vertices=fs_vertices, tmin=0, tstep=1., subject="fsaverage",
             )
+            # save the GA stc - this can be exported as Nifti, then loaded into other software (e.g. xjview) to extract anatomical labels
+            if subj_key == "":                
+                results_path.mkdir(exist_ok=True)
+                stc.save(f'{results_path}/decoding{extra}_csp_GA') 
+
             src = mne.read_source_spaces(src_fname)
             # for vol src, the plot function returns a matplotlib Figure -
             # we can't update the clim & time point for this once plotted, so do the actual plotting later
@@ -398,6 +407,11 @@ if plot_classification or plot_indiv:
                 this_data.reshape(-1, n_vertices).T,
                 vertices=fs_vertices, tmin=0, tstep=1., subject="fsaverage",
             )
+            # save the GA stc
+            if subj_key == "":                
+                results_path.mkdir(exist_ok=True)
+                stc.save(f'{results_path}/decoding{extra}_csp_GA') 
+
             brain = stc.plot(
                 initial_time=0., transparent=True,
                 colormap="viridis", clim=dict(kind="value", lims=[0, 1, 2]),
